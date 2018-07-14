@@ -145,16 +145,11 @@ void raid_1(mount_info * info, client * client){
 	int swap_connections = ip_port_parser(info->hotswap, &swap_ip_port);
 	int sfd[numb_connections+swap_connections];
 	struct sockaddr_in addr[numb_connections + swap_connections];
-    struct timeval timeout;
-    timeout.tv_sec = client->timeout;
-    timeout.tv_usec = 0;
+
 	int i;
     int con;
 	for (i = 0; i < numb_connections; ++i){
 		sfd[i] = socket(AF_INET, SOCK_STREAM, 0);
-
-        setsockopt (sfd[i], SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
-                sizeof(timeout));
 
     	addr[i].sin_family = AF_INET;
 	    addr[i].sin_port = htons(ip_ports[i].port);
@@ -168,17 +163,15 @@ void raid_1(mount_info * info, client * client){
 	}
 	//hot swap connection
 	sfd[i] = socket(AF_INET, SOCK_STREAM, 0);
-    setsockopt (sfd[i], SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
-                sizeof(timeout));
 
 	addr[i].sin_family = AF_INET;
     addr[i].sin_port = htons(swap_ip_port->port);
     inet_aton(swap_ip_port->ip, (struct in_addr *)&addr[i].sin_addr.s_addr);
     con = connect(sfd[i], (struct sockaddr *) &addr[i], sizeof(struct sockaddr_in));
     if (con == 0){
-    current_time = time(NULL);
-    printf("[%s] %s %s:%d %s\n", strtok(ctime(&current_time), "\n"), info->diskname, swap_ip_port->ip,
-            swap_ip_port->port, "hotswap connected");
+        current_time = time(NULL);
+        printf("[%s] %s %s:%d %s\n", strtok(ctime(&current_time), "\n"), info->diskname, swap_ip_port->ip,
+                swap_ip_port->port, "hotswap connected");
     }
 
     int fd = open(client->errorlog, O_RDWR);
@@ -189,7 +182,7 @@ void raid_1(mount_info * info, client * client){
     struct auxdata * data = malloc(sizeof(struct auxdata));
     data->fds = sfd;
     data->errorlog = fd;
-    data->fd_numb = numb_connections + swap_connections;
+    data->timeout = client->timeout;
     data->diskname = info->diskname;
     data->ip_ports = ip_ports;
     data->swap_ip_port = swap_ip_port;

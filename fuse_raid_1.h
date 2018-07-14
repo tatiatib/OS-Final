@@ -8,7 +8,7 @@ typedef struct addresses{
 
 struct auxdata{
 	int * fds;
-	int fd_numb;
+	int timeout;
 	char * diskname;
 	int errorlog;
 	addresses * ip_ports;

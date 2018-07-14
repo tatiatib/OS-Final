@@ -21,7 +21,7 @@
 
 
 #include "fuse_raid_1.h"
-
+#define SERVER_NUMB 3
 struct msg{
 	int type;
 	char * path;
@@ -154,6 +154,68 @@ int get_truncate_data(struct msg * data, char ** res){
 	return size;
 }
 
+int get_timeout(int fd, int fd_index, struct auxdata data){
+	printf("%d\n", data.timeout);
+	close(fd);
+	fd = socket(AF_INET, SOCK_STREAM, 0);
+	int error = 0, ret = 0;
+    fd_set  rset, wset;
+    socklen_t len = sizeof(error);
+    struct timeval ts;
+    struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(data.ip_ports[fd_index].port);
+	inet_aton(data.ip_ports[fd_index].ip, (struct in_addr *)&addr.sin_addr.s_addr);
+
+    ts.tv_sec = data.timeout;
+	FD_ZERO(&rset);
+    FD_SET(fd, &rset);
+    wset = rset;    //structure assignment ok
+
+    fcntl(fd, F_SETFL, O_NONBLOCK);   
+
+	 //initiate non-blocking connect
+    ret = connect(fd, (struct sockaddr *) &addr, sizeof(struct sockaddr_in));
+    if (ret == -1 && errno != EINPROGRESS){
+    	printf("%s\n", "hiii");
+        return -1;
+    }
+    
+    if(ret == 0){
+    	time_t current_time = time(NULL);
+		printf("[%s] %s %s:%d connection established\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);	
+		return 0;
+    }
+
+    //we are waiting for connect to complete now
+
+    if( (ret = select(fd + 1, &rset, &wset, NULL, &ts)) < 0){
+    	printf("%s\n", "idk");
+        return -1;
+    }
+    if(ret == 0){   //we had a timeout
+        errno = ETIMEDOUT;
+        printf("%s\n", "timeout");
+        return -1;
+    }
+
+
+    //we had a positivite return so a descriptor is ready
+    if (FD_ISSET(fd, &rset) || FD_ISSET(fd, &wset)){
+        if(getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) < 0)
+            return -1;
+    }else{
+    	printf("%s\n", "not positivite	");
+        return -1;
+    }
+
+    if(error){  //check if we had a socket error
+        errno = error;
+        return -1;
+    }
+	return 0;
+}
 static int send_data_buf(int fd_index, char * data_to_send, int size, char * log_msg,
 	 struct msg * msg, struct buf * received_buf){
 
@@ -175,6 +237,9 @@ static int send_data_buf(int fd_index, char * data_to_send, int size, char * log
     if (received == 0){
     	printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+    	if(get_timeout(fd, fd_index, data) == -1){
+    		printf("%s\n", "lost");
+    	}
     }
 
     if (msg->type == 0){
@@ -288,8 +353,8 @@ static int net_open(const char* path, struct fuse_file_info* fi){
 	if (fd_1 < 0 || fd_2 < 0){
 		return -ENOENT;
 	}
-	fi->fh = fd_1;
 
+	fi->keep_cache = 1;
 	memcpy(&fi->fh, &fd_1, sizeof(int));
 	memcpy((char*)(&fi->fh) + sizeof(int), &fd_2, sizeof(int));
 	return 0;
@@ -306,7 +371,7 @@ static int net_read(const char* path, char *buf, size_t size, off_t offset,
 		.offset = offset,
 		.path = (char*)path
 	};
-	printf("%d\n", msg.fh);
+
 	int buf_size = get_read_data(&msg, &data_to_send);
 	struct buf cur = {
 		.read_buf = buf
@@ -510,7 +575,7 @@ static int net_create(const char * path, mode_t modes, struct fuse_file_info * f
 	int fd_1 = send_data_buf(0, data_to_send, size, "create ", &msg, NULL);
 	int fd_2 = send_data_buf(1, data_to_send, size, "create ", &msg, NULL);
 	free(data_to_send);
-	
+
 	if (fd_1 < 0 || fd_2 < 0){
 		return -ENOENT;
 	}
@@ -538,7 +603,7 @@ static int net_truncate(const char* path, off_t size){
 static void net_destroy(void * private_data){
 	struct auxdata * data = (struct auxdata *)private_data;
 	int i;
-	for(i = 0; i < data->fd_numb; i++){
+	for(i = 0; i < SERVER_NUMB; i++){
 		close(data->fds[i]);
 	}
 	close(data->errorlog);

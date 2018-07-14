@@ -1,7 +1,7 @@
 errorlog = errorlog-file
 cache_size = 1024M
 cache_replacment = rlu
-timeout = 60
+timeout = 10000
 
 diskname = STORAGE1
 mountpoint = mount
