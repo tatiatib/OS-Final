@@ -16,8 +16,8 @@
 #include <sys/xattr.h>
 #include <dirent.h>
 #include <errno.h>
-
-#include "sha.h"
+// #include <openssl/sha.h>
+// #include "sha.h"
 // #include "uthash.h"
 #define BACKLOG 10
 #define FUNC_NUMB 14
@@ -34,13 +34,6 @@ struct msg{
 	char * buf;
 };
 
-// const unsigned char l[] = "Hello, world!";
-// size_t length = strlen((char*)l);
-
-// unsigned char hash[SHA_DIGEST_LENGTH]; // 20 byte
-// SHA1(l, length, hash);
-
-// printf("%s\n", hash);
 
 void net_get_attr(int cfd, char * buf, int type, char * path);
 void net_open(int cfd, char * buf, int type, char * path);
@@ -90,8 +83,11 @@ static struct msg * deserialize_read(char * buf){
 
 static struct msg * deserialize_write(char * buf){
 	struct msg * data = deserialize_read(buf);
+	int length = *(int *)(buf + sizeof(int)*4);
+	data->path = malloc(length + 1);
+	strcpy(data->path,	buf + sizeof(int)*5);
 	data->buf = malloc(data->size);
-	memcpy(data->buf, (buf + sizeof(int)*4), data->size);
+	memcpy(data->buf, (buf + sizeof(int)*5 + length + 1), data->size);
 	return data;
 }
 
@@ -133,16 +129,32 @@ static struct msg * deserialize_create(char * buf){
 	return data;
 }
 
- void compute_hash(int fd, BYTE ** hash){	
+unsigned long hash_djb(unsigned char *str){
+    unsigned long hash = 5381;
+    int c;
+
+    while ((c = *str++)){
+        hash = ((hash << 5) + hash) + c; 
+    }
+
+    return hash;
+}
+
+ void compute_hash(char * path, unsigned long * hash){	
+ 	int fd = open(path, O_RDWR);
 	struct stat st;
-	SHA1_CTX ctx;
 	fstat(fd, &st);
 	int size = st.st_size;
-	char * buffer = malloc(size);
-	int read_bytes = read(fd, buffer, size);
-	sha1_init(&ctx);
-	sha1_update(&ctx, (const BYTE *)buffer, strlen(buffer));
-	sha1_final(&ctx, *hash);
+	if (size == 0){
+		close(fd);
+		return;
+	}
+	unsigned char * buffer = malloc(size);
+	read(fd, buffer, size);
+	buffer[size] = '\0';
+	*hash = hash_djb(buffer);
+	free(buffer);
+	close(fd);
 }
 
 void net_open(int cfd, char * buf, int type, char * mountpoint){
@@ -150,24 +162,31 @@ void net_open(int cfd, char * buf, int type, char * mountpoint){
 	char temp[strlen(mountpoint) + strlen(data->path)];
 	strcpy(temp, mountpoint);
 	strcat(temp, data->path);
-
 	int fd = open(temp, data->flags);
-	// BYTE old_hash[SHA1_BLOCK_SIZE];
-	// if (fgetxattr(fd, "user.hash", old_hash, SHA1_BLOCK_SIZE) == -1){
-	// 	printf("%s\n","read hash" );
-	// 	perror(strerror(errno));
-	// }else{
-	// 	BYTE hash[SHA1_BLOCK_SIZE];
-	// 	compute_hash(fd, hash);
-	// 	printf("%s\n", old_hash);
-	// 	printf("%s\n", hash);
-	// 	if (old_hash == hash){
-	// 		printf("%s\n", "everythins is okay");
-	// 	}
+	unsigned long old_hash = -1;
+	if (fgetxattr(fd, "user.hash", &old_hash, sizeof(unsigned long)) == -1){
+		perror(strerror(errno));
+	}else{
+		unsigned long hash;
+		compute_hash(temp, &hash);
+		if (old_hash == hash){
+			send(cfd, &fd, sizeof(int), 0);
+			return;
+		}else{
+			int err = -2;
+			send(cfd, &err, sizeof(int), 0);
+			return;
+		}
 
-	// }
-
-	send(cfd, &fd, sizeof(int), 0);
+	}
+	if (old_hash == -1){
+		send(cfd, &fd, sizeof(int), 0);
+	}else{
+		int err = -1;
+		send(cfd, &err, sizeof(int), 0);	
+	}
+	
+	
 }
 
 void net_get_attr(int cfd, char * buf_data, int type, char * mountpoint){
@@ -288,14 +307,21 @@ void net_truncate(int cfd, char * buf, int type, char * mountpoint){
 
 void net_write(int cfd, char * buf, int type, char * mountpoint){
 	struct msg * data = deserialize_write(buf);
+	char temp[strlen(mountpoint) + strlen(data->path)];
+	strcpy(temp, mountpoint);
+	strcat(temp, data->path);
+
 	size_t written = pwrite(data->fd, data->buf, data->size, data->offset);
-	// BYTE *hash = malloc(SHA1_BLOCK_SIZE);
-	// compute_hash(data->fd, &hash);
-	// if (fsetxattr(data->fd, "user.hash", hash, SHA1_BLOCK_SIZE, 0) == -1){
-	// 	printf("%s\n","write hash");
-	// 	perror(strerror(errno));
-	// }
-	send(cfd, &written, sizeof(int), 0);
+
+	unsigned long hash;
+	compute_hash(temp, &hash);
+	if (fsetxattr(data->fd, "user.hash", &hash, sizeof(unsigned long), 0) == -1){
+		perror(strerror(errno));
+	}
+	char * resp = malloc(sizeof(int) + sizeof(unsigned long));
+	memcpy(resp, &written, sizeof(int));
+	memcpy(resp + sizeof(int), &hash, sizeof(unsigned long));
+	send(cfd, resp, sizeof(int) + sizeof(unsigned long), 0);
 }
 
 void net_readdir(int cfd, char * buf, int type, char * mountpoint){

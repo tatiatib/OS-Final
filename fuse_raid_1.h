@@ -10,6 +10,7 @@ struct auxdata{
 	int * fds;
 	int fd_numb;
 	char * diskname;
+	int errorlog;
 	addresses * ip_ports;
 	addresses * swap_ip_port;
 };

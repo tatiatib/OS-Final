@@ -140,20 +140,20 @@ static int ip_port_parser(char * servers, addresses ** ip_ports){
 void raid_1(mount_info * info, client * client){
 	addresses * ip_ports = NULL;
 	addresses * swap_ip_port = NULL;
-  time_t current_time;
+    time_t current_time;
 	int numb_connections = ip_port_parser(info->servers, &ip_ports);
 	int swap_connections = ip_port_parser(info->hotswap, &swap_ip_port);
 	int sfd[numb_connections+swap_connections];
 	struct sockaddr_in addr[numb_connections + swap_connections];
-  struct timeval timeout;
-  timeout.tv_sec = 10;
-  timeout.tv_usec = 0;
+    struct timeval timeout;
+    timeout.tv_sec = client->timeout;
+    timeout.tv_usec = 0;
 	int i;
-  int con;
+    int con;
 	for (i = 0; i < numb_connections; ++i){
-		  sfd[i] = socket(AF_INET, SOCK_STREAM, 0);
+		sfd[i] = socket(AF_INET, SOCK_STREAM, 0);
 
-      setsockopt (sfd[i], SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
+        setsockopt (sfd[i], SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
                 sizeof(timeout));
 
     	addr[i].sin_family = AF_INET;
@@ -168,29 +168,33 @@ void raid_1(mount_info * info, client * client){
 	}
 	//hot swap connection
 	sfd[i] = socket(AF_INET, SOCK_STREAM, 0);
-  setsockopt (sfd[i], SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
+    setsockopt (sfd[i], SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
                 sizeof(timeout));
+
 	addr[i].sin_family = AF_INET;
-  addr[i].sin_port = htons(swap_ip_port->port);
-  inet_aton(swap_ip_port->ip, (struct in_addr *)&addr[i].sin_addr.s_addr);
-  con = connect(sfd[i], (struct sockaddr *) &addr[i], sizeof(struct sockaddr_in));
-  if (con == 0){
+    addr[i].sin_port = htons(swap_ip_port->port);
+    inet_aton(swap_ip_port->ip, (struct in_addr *)&addr[i].sin_addr.s_addr);
+    con = connect(sfd[i], (struct sockaddr *) &addr[i], sizeof(struct sockaddr_in));
+    if (con == 0){
     current_time = time(NULL);
     printf("[%s] %s %s:%d %s\n", strtok(ctime(&current_time), "\n"), info->diskname, swap_ip_port->ip,
             swap_ip_port->port, "hotswap connected");
-  }
+    }
 
-  struct auxdata * data = malloc(sizeof(struct auxdata));
-  data->fds = sfd;
-  data->fd_numb = numb_connections + swap_connections;
-  data->diskname = info->diskname;
-  data->ip_ports = ip_ports;
-  data->swap_ip_port = swap_ip_port;
+    int fd = open(client->errorlog, O_RDWR);
+    if (fd == -1){
+        printf("Can't open errorlog file %s\n", client->errorlog);
+    }
+    
+    struct auxdata * data = malloc(sizeof(struct auxdata));
+    data->fds = sfd;
+    data->errorlog = fd;
+    data->fd_numb = numb_connections + swap_connections;
+    data->diskname = info->diskname;
+    data->ip_ports = ip_ports;
+    data->swap_ip_port = swap_ip_port;
 
-  init_filesys(info->mountpoint, data);
-
-  // free(ip_ports);
-  // free(swap_ip_port);
+    init_filesys(info->mountpoint, data);
 
 }
 

@@ -38,6 +38,7 @@ struct msg{
 struct buf{
 	struct stat * stbuf;
 	char * read_buf;	
+	unsigned long hash;
 };
 
 static void put_path(struct msg * data, char ** res, int size){
@@ -82,10 +83,13 @@ int get_read_data(struct msg * data, char ** res){
 }
 
 int get_write_data(struct msg * data, char ** res){
-	int size = sizeof(int) * 5 + data->size;
+	int size = sizeof(int) * 6 + data->size + 1 + strlen(data->path);
 	*res = malloc(size);
 	put_fd(data, res, size - sizeof(int));
-	memcpy(*res + sizeof(int) * 5, data->buf, data->size);
+	int length = strlen(data->path);
+	memcpy(*res + sizeof(int) * 5, &length, sizeof(int));
+	memcpy(*res + sizeof(int) * 6, data->path, strlen(data->path) + 1);
+	memcpy(*res + sizeof(int) * 6 + strlen(data->path) + 1, data->buf, data->size);
 	return size;
 }
 
@@ -156,7 +160,7 @@ static int send_data_buf(int fd_index, char * data_to_send, int size, char * log
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata data = *(struct auxdata *)context->private_data;
 	int fd = data.fds[fd_index];
-
+	
 	send(fd, data_to_send, size, 0);
 	time_t current_time = time(NULL);
     printf("[%s] %s %s:%d %s %s", strtok(ctime(&current_time), "\n"), data.diskname, 
@@ -182,7 +186,12 @@ static int send_data_buf(int fd_index, char * data_to_send, int size, char * log
     			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
     	}
     }	
-    
+
+    if (msg->type == 1 && status_code == -2){
+    	printf("[%s] %s %s:%d file damaged, wrong hash for path %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port, msg->path);
+    }
+
     if (msg->type == 2){
     	int read_bytes = status_code;
 		if (read_bytes != -1 && read_bytes != 0){
@@ -197,6 +206,7 @@ static int send_data_buf(int fd_index, char * data_to_send, int size, char * log
     }
 
     if (msg->type == 8){
+    	recv(fd, &received_buf->hash, sizeof(unsigned long), 0);
     	printf("[%s] %s %s:%d %d bytes wrote at %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
 			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port, status_code, msg->path);
     }
@@ -221,7 +231,6 @@ static void send_data_readdir(int fd_index, char * data_to_send, int size, char 
 	if (received == 0){
 		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
-
 	}
 	while(name_length != 0){
 		char * name = malloc(name_length + 1);
@@ -264,7 +273,6 @@ static int net_open(const char* path, struct fuse_file_info* fi){
 		printf("%s\n", "weird");
 		return 0;
 	}
-	int res = 0;
 	char * data_to_send = NULL;
 	struct msg msg = {
 		.type = 1,
@@ -272,28 +280,33 @@ static int net_open(const char* path, struct fuse_file_info* fi){
 		.flags = fi->flags
 	};
 	int size = get_open_data(&msg, &data_to_send);
-	res = send_data_buf(0, data_to_send, size, "open", &msg, NULL);
-	// res = send_data_buf(1, data_to_send, size, "open", &msg, NULL);
+	int fd_1 = send_data_buf(0, data_to_send, size, "open", &msg, NULL);
+
+	int fd_2 = send_data_buf(1, data_to_send, size, "open", &msg, NULL);
 	free(data_to_send);
-	if (res < 0){
+
+	if (fd_1 < 0 || fd_2 < 0){
 		return -ENOENT;
 	}
+	fi->fh = fd_1;
 
-	fi->fh = res;
+	memcpy(&fi->fh, &fd_1, sizeof(int));
+	memcpy((char*)(&fi->fh) + sizeof(int), &fd_2, sizeof(int));
 	return 0;
 }
 
 static int net_read(const char* path, char *buf, size_t size, off_t offset, 
 	struct fuse_file_info* fi){
+
 	char * data_to_send = NULL;
 	struct msg msg = {
 		.type = 2,
-		.fh = fi->fh,
+		.fh = *(int*)(&fi->fh),
 		.size = size,
 		.offset = offset,
 		.path = (char*)path
 	};
-	
+	printf("%d\n", msg.fh);
 	int buf_size = get_read_data(&msg, &data_to_send);
 	struct buf cur = {
 		.read_buf = buf
@@ -312,12 +325,16 @@ static int net_release(const char* path, struct fuse_file_info *fi){
 	char * data_to_send = NULL;
 	struct msg msg = {
 		.type = 3,
-		.fh = fi->fh,
+		.fh = *(int*)(&fi->fh),
 		.path = (char*)path
 	};
+
 	int size = get_fd_data(&msg, &data_to_send);
 	send_data_buf(0, data_to_send, size, "close", &msg, NULL);
 
+	msg.fh = *(int*)((char*)(&fi->fh) + sizeof(int));
+	size = get_fd_data(&msg, &data_to_send);
+	send_data_buf(1, data_to_send, size, "close", &msg, NULL);
     free(data_to_send);
 	return 0;
 }
@@ -332,7 +349,8 @@ static int net_rename(const char* from, const char* to){
 	int size = get_rename_data(&msg, &data_to_send);
 	
 	send_data_buf(0, data_to_send, size, "rename", &msg, NULL);
-	
+	send_data_buf(1, data_to_send, size, "rename", &msg, NULL);
+
     free(data_to_send);
 
 	return 0;
@@ -347,7 +365,8 @@ static int net_unlink(const char* path){
 
 	int size = get_path_data(&msg, &data_to_send);
 	send_data_buf(0, data_to_send, size, "unlink", &msg, NULL);
-	
+	send_data_buf(1, data_to_send, size, "unlink", &msg, NULL);
+
     free(data_to_send);
 	return 0;
 }
@@ -361,7 +380,8 @@ static int net_rmdir(const char* path){
 
 	int size = get_path_data(&msg, &data_to_send);
 	send_data_buf(0, data_to_send, size, "remove dir ", &msg, NULL);
-	
+	send_data_buf(1, data_to_send, size, "remove dir ", &msg, NULL);
+
     free(data_to_send);
 	return 0;
 }
@@ -375,6 +395,7 @@ static int net_mkdir(const char* path, mode_t mode){
 	};
 	int size = get_mode_data(&msg, &data_to_send);
 	send_data_buf(0, data_to_send, size, "make dir ", &msg, NULL);
+	send_data_buf(1, data_to_send, size, "make dir ", &msg, NULL);
 
     free(data_to_send);
 	return 0;
@@ -389,7 +410,7 @@ static int net_write(const char* path, const char *buf, size_t size, off_t offse
 	char * data_to_send = NULL;
 	struct msg msg = {
 		.type = 8,
-		.fh = fi->fh,
+		.fh = *(int*)(&fi->fh),
 		.size = size,
 		.offset = offset,
 		.buf = (char*)buf,
@@ -397,11 +418,26 @@ static int net_write(const char* path, const char *buf, size_t size, off_t offse
 	};
 
 	int buf_size = get_write_data(&msg, &data_to_send);
-	int bytes_written_1 = send_data_buf(0, data_to_send, buf_size, "write", &msg, NULL);
-	// int bytes_written_2 = send_data_buf(1, data_to_send, buf_size, "write", &msg, NULL);
-	// if (bytes_written_1 == bytes_written_2){
-	// 	printf("%s\n", "Done writing");
-	// }
+	struct buf server_1 = {
+		.hash = 0
+	};
+	struct buf server_2 = {
+		.hash = 0
+	};
+	int bytes_written_1 = send_data_buf(0, data_to_send, buf_size, "write", &msg, &server_1);
+
+	msg.fh = *(int*)((char*)(&fi->fh) + sizeof(int));
+	buf_size = get_write_data(&msg, &data_to_send);
+	int bytes_written_2 = send_data_buf(1, data_to_send, buf_size, "write", &msg, &server_2);
+	if (server_1.hash != server_2.hash){
+		printf("%s %s \n", "Error while writing file ", path);
+	}
+	if (bytes_written_1 != bytes_written_2){
+		struct fuse_context *context = fuse_get_context();
+		struct auxdata aux = *(struct auxdata *)context->private_data;
+		char error_msg[] = "Different bytes written";
+		write(aux.errorlog, error_msg, strlen(error_msg));
+	}
 
 	free(data_to_send);
 	return bytes_written_1;
@@ -423,7 +459,7 @@ static int net_opendir(const char* path, struct fuse_file_info* fi){
 	int fd = data.fds[0];
 
 	send(fd, data_to_send, size, 0);
-    int bytes = recv(fd, &fi->fh, sizeof(intptr_t), 0);
+    recv(fd, &fi->fh, sizeof(intptr_t), 0);
     if (fi->fh == 0){
 		return -ENOENT;
 	}
@@ -463,7 +499,6 @@ static int net_releasedir(const char* path, struct fuse_file_info *fi){
 }
 
 static int net_create(const char * path, mode_t modes, struct fuse_file_info * fi){
-	int res = 0;
 	char * data_to_send = NULL;
 	struct msg msg = {
 		.type = 11,
@@ -472,12 +507,15 @@ static int net_create(const char * path, mode_t modes, struct fuse_file_info * f
 		.mode = modes
 	};
 	int size = get_create_data(&msg, &data_to_send);
-	res = send_data_buf(0, data_to_send, size, "create ", &msg, NULL);
+	int fd_1 = send_data_buf(0, data_to_send, size, "create ", &msg, NULL);
+	int fd_2 = send_data_buf(1, data_to_send, size, "create ", &msg, NULL);
 	free(data_to_send);
-	if (res < 0){
+	
+	if (fd_1 < 0 || fd_2 < 0){
 		return -ENOENT;
 	}
-	fi->fh = res;
+	memcpy(&fi->fh, &fd_1, sizeof(int));
+	memcpy((char*)(&fi->fh) + sizeof(int), &fd_2, sizeof(int));
 	return 0;
 }
 
@@ -491,7 +529,7 @@ static int net_truncate(const char* path, off_t size){
 	};
 	int buf_size = get_truncate_data(&msg, &data_to_send);
 	send_data_buf(0, data_to_send, buf_size, "truncate ", &msg, NULL);
-
+	send_data_buf(1, data_to_send, buf_size, "truncate ", &msg, NULL);
 	free(data_to_send);
 
 	return 0;
@@ -503,6 +541,7 @@ static void net_destroy(void * private_data){
 	for(i = 0; i < data->fd_numb; i++){
 		close(data->fds[i]);
 	}
+	close(data->errorlog);
 	free(data->ip_ports->ip);
 	free(data->ip_ports);
   	free(data->swap_ip_port->ip);
