@@ -104,7 +104,7 @@ int read_file(char * config_file, client * net_client, mount_info ** mount_infos
     struct stat st;
     stat(config_file, &st);
     int size = st.st_size;
-	char * buffer = malloc(size);
+    char * buffer = malloc(size);
 	if (read(fd, buffer, size) == -1){
 		exit(1);
 	}
@@ -161,9 +161,9 @@ void raid_1(mount_info * info, client * client){
             ip_ports[i].port, "open connection");
       }
 	}
+    
 	//hot swap connection
 	sfd[i] = socket(AF_INET, SOCK_STREAM, 0);
-
 	addr[i].sin_family = AF_INET;
     addr[i].sin_port = htons(swap_ip_port->port);
     inet_aton(swap_ip_port->ip, (struct in_addr *)&addr[i].sin_addr.s_addr);

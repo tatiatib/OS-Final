@@ -149,32 +149,32 @@ int get_truncate_data(struct msg * data, char ** res){
 	int size = sizeof(int) * 2 + sizeof(size_t) + strlen(data->path) + 1 + sizeof(int);
 	*res = malloc(size);
 	put_path(data, res, size - sizeof(int));
-	int pointer = sizeof(int) + sizeof(size_t) + strlen(data->path) + 1;
+	int pointer = sizeof(int)*2+ sizeof(size_t) + strlen(data->path) + 1;
 	memcpy(*res + pointer, &data->size, sizeof(int));
 	return size;
 }
 
 int get_timeout(int fd, int fd_index, struct auxdata data){
-	printf("%d\n", data.timeout);
 	close(fd);
 	fd = socket(AF_INET, SOCK_STREAM, 0);
-	int error = 0, ret = 0;
-    fd_set  rset, wset;
-    socklen_t len = sizeof(error);
-    struct timeval ts;
+	// int error = 0, ret = 0;
+    // fd_set fdset;
+	int ret = 0;
+    // struct timeval ts;
     struct sockaddr_in addr;
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(data.ip_ports[fd_index].port);
 	inet_aton(data.ip_ports[fd_index].ip, (struct in_addr *)&addr.sin_addr.s_addr);
 
-    ts.tv_sec = data.timeout;
-	FD_ZERO(&rset);
-    FD_SET(fd, &rset);
-    wset = rset;    //structure assignment ok
+    // ts.tv_sec = data.timeout;
+    // ts.tv_usec = 0;
+	// FD_ZERO(&fdset);
+    // FD_SET(fd, &fdset);
 
-    fcntl(fd, F_SETFL, O_NONBLOCK);   
+    // fcntl(fd, F_SETFL, O_NONBLOCK);
 
 	 //initiate non-blocking connect
+	sleep(data.timeout);
     ret = connect(fd, (struct sockaddr *) &addr, sizeof(struct sockaddr_in));
     if (ret == -1 && errno != EINPROGRESS){
     	printf("%s\n", "hiii");
@@ -188,35 +188,127 @@ int get_timeout(int fd, int fd_index, struct auxdata data){
 		return 0;
     }
 
-    //we are waiting for connect to complete now
+    // //we are waiting for connect to complete now
 
-    if( (ret = select(fd + 1, &rset, &wset, NULL, &ts)) < 0){
-    	printf("%s\n", "idk");
-        return -1;
-    }
-    if(ret == 0){   //we had a timeout
-        errno = ETIMEDOUT;
-        printf("%s\n", "timeout");
-        return -1;
-    }
+    // if( (ret = select(fd + 1, NULL, &fdset, NULL, &ts)) < 0){
+    // 	printf("%s\n", "idk");
+    //     return -1;
+    // }
+    // if(ret == 0){   //we had a timeout
+    //     errno = ETIMEDOUT;
+    //     printf("%s\n", "timeout");
+    //     return -1;
+    // }
 
 
-    //we had a positivite return so a descriptor is ready
-    if (FD_ISSET(fd, &rset) || FD_ISSET(fd, &wset)){
-        if(getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) < 0)
-            return -1;
-    }else{
-    	printf("%s\n", "not positivite	");
-        return -1;
-    }
+    // //we had a positivite return so a descriptor is ready
+   	// socklen_t len = sizeof error;
+    // if(getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) < 0)
+    //         return -1;
+    
 
-    if(error){  //check if we had a socket error
-        errno = error;
-        return -1;
-    }
+    // if(error){  //check if we had a socket error
+    //     errno = error;
+    //     return -1;
+    // }
 	return 0;
 }
-static int send_data_buf(int fd_index, char * data_to_send, int size, char * log_msg,
+
+static void swap_servers(int fd_index){
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata * data = (struct auxdata *)context->private_data;
+	int fd_hotswap = data->fds[2];
+	
+	char * ip_hotswap = data->swap_ip_port[0].ip;
+	int port_hotswap = data->swap_ip_port[0].port;
+
+	data->fds[2] = data->fds[fd_index];
+	data->swap_ip_port[0].ip = data->ip_ports[fd_index].ip;
+	data->swap_ip_port[0].port = data->ip_ports[fd_index].port;
+
+	data->fds[fd_index] = fd_hotswap;
+	data->ip_ports[fd_index].ip = ip_hotswap;
+	data->ip_ports[fd_index].port = port_hotswap;
+}
+
+
+static int check_connection(int fd){
+	int keep_alive_msg = 1;
+	send(fd, &keep_alive_msg, sizeof(int), 0);
+	int received;
+	if ((received = recv(fd, &keep_alive_msg, sizeof(int), 0)) == 0){
+		return 0;
+	}
+	return 1;
+}
+
+static void rewrite(int from, int to){
+	int dump_msg = -1;
+	send(from, &dump_msg, sizeof(int), 0);
+	// int length;
+	// recv(from, &length, sizeof(int), 0);
+	// if (length > 0){
+	// 	void * buf = malloc(length);
+	// 	recv(from, buf, length, 0);
+	// 	send(to, buf, length, 0);
+	// } 
+}
+
+static void rewrite_to_hotswap(int fd_index){
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata data = *(struct auxdata *)context->private_data;
+	int fd = data.fds[fd_index];
+
+	if (check_connection(fd)){
+		time_t current_time = time(NULL);
+		printf("[%s] %s %s:%d hotswap connected\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+	}else{
+		time_t current_time = time(NULL);
+		printf("[%s] %s %s:%d hotswap is not connected\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+		return;
+	}
+	printf("%s\n", "rewriting...............");
+	rewrite(data.fds[1-fd_index], data.fds[fd_index]);
+}
+
+static int fill_buf(int fd, int fd_index, struct auxdata data, struct buf * received_buf, 
+		int *status_code, int buf_type){
+
+	if (*status_code != 0 && buf_type == 0){
+    	*status_code = -ENOENT;
+	}
+	int received;
+	if (*status_code != -1 && *status_code != 0 && buf_type == 1){
+		received = recv(fd, received_buf->read_buf, *status_code, 0);
+	}
+	time_t current_time = time(NULL);
+	if (buf_type == 0){
+		received = recv(fd, received_buf->stbuf, sizeof(*received_buf->stbuf), 0);
+	}
+	if (buf_type == 2)
+		received = recv(fd, &received_buf->hash, sizeof(unsigned long), 0);
+
+	if (received == 0){
+		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+		if (get_timeout(fd, fd_index, data) == -1){
+			swap_servers(fd_index);
+			rewrite_to_hotswap(fd_index);
+			return 1;
+		}
+	}
+
+	if (buf_type == 1){
+		printf("[%s] %s %s:%d %s %d %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port, "received ", 
+				*status_code,  " bytes to read");
+	}
+	return 0;
+}
+
+static int receive_data_from_storage(int fd_index, char * data_to_send, int size, char * log_msg,
 	 struct msg * msg, struct buf * received_buf){
 
 	struct fuse_context *context = fuse_get_context();
@@ -237,18 +329,20 @@ static int send_data_buf(int fd_index, char * data_to_send, int size, char * log
     if (received == 0){
     	printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
-    	if(get_timeout(fd, fd_index, data) == -1){
-    		printf("%s\n", "lost");
+    	if (get_timeout(fd, fd_index, data) == -1){
+    		swap_servers(fd_index);
+    		rewrite_to_hotswap(fd_index);
+    		return -2;
+    	}else{
+    		return receive_data_from_storage(fd_index, data_to_send, size, log_msg, msg, 
+    			received_buf);
     	}
     }
 
     if (msg->type == 0){
-    	if (status_code != 0)
-    		status_code = -ENOENT;
-    	received = recv(fd, received_buf->stbuf, sizeof(*received_buf->stbuf), 0);
-    	if (received == 0){
-    		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
-    			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+    	if (fill_buf(fd, fd_index, data, received_buf, &status_code, 0)){
+    		return receive_data_from_storage(fd_index, data_to_send, size, log_msg, msg, 
+    				received_buf);	
     	}
     }	
 
@@ -258,29 +352,43 @@ static int send_data_buf(int fd_index, char * data_to_send, int size, char * log
     }
 
     if (msg->type == 2){
-    	int read_bytes = status_code;
-		if (read_bytes != -1 && read_bytes != 0){
-			received = recv(fd, received_buf->read_buf, read_bytes, 0);
-		}
-		printf("[%s] %s %s:%d %s %d %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
-			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port, "received ", read_bytes,  " bytes to read");
-    	if (received == 0){
-    		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
-    			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+    	if (fill_buf(fd, fd_index, data, received_buf, &status_code, 1)){
+    		return receive_data_from_storage(fd_index, data_to_send, size, log_msg, msg, 
+    				received_buf);
     	}
+
     }
 
-    if (msg->type == 8){
-    	recv(fd, &received_buf->hash, sizeof(unsigned long), 0);
-    	printf("[%s] %s %s:%d %d bytes wrote at %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
-			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port, status_code, msg->path);
+    if (msg->type == 8 || msg->type == 12){
+    	if (fill_buf(fd, fd_index, data, received_buf, &status_code, 2)){
+    		return receive_data_from_storage(fd_index, data_to_send, size, log_msg, msg, 
+    				received_buf);
+    	}
+    	if (msg->type == 8)
+			printf("[%s] %s %s:%d %d bytes wrote at %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+				data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port, status_code, msg->path);
     }
     return status_code;
    
 }
 
 
-static void send_data_readdir(int fd_index, char * data_to_send, int size, char * log_msg, char* path,
+static void send_keep_alive(int fd_index){
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata data = *(struct auxdata *)context->private_data;
+	int fd = data.fds[fd_index];
+	int keep_alive_msg = 1;
+	send(fd, &keep_alive_msg, sizeof(int), 0);
+
+	if (recv(fd, &keep_alive_msg, sizeof(int), 0) == 0){
+		time_t current_time = time(NULL);
+		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+
+	}
+
+}
+static void receive_readdir_from_storage(int fd_index, char * data_to_send, int size, char * log_msg, char* path,
 		void ** buf, fuse_fill_dir_t filler){
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata data = *(struct auxdata *)context->private_data;
@@ -327,8 +435,8 @@ static int net_getattr(const char* path, struct stat* stbuf){
 	struct buf cur = {
 		.stbuf = stbuf
 	};
-	int status_code = send_data_buf(0, data_to_send, size, "getattr on path", &msg, &cur);
-	
+	int status_code = receive_data_from_storage(0, data_to_send, size, "getattr on path", &msg, &cur);
+	send_keep_alive(1);
 	free(data_to_send);
 	return status_code;
 }
@@ -345,9 +453,8 @@ static int net_open(const char* path, struct fuse_file_info* fi){
 		.flags = fi->flags
 	};
 	int size = get_open_data(&msg, &data_to_send);
-	int fd_1 = send_data_buf(0, data_to_send, size, "open", &msg, NULL);
-
-	int fd_2 = send_data_buf(1, data_to_send, size, "open", &msg, NULL);
+	int fd_1 = receive_data_from_storage(0, data_to_send, size, "open", &msg, NULL);
+	int fd_2 = receive_data_from_storage(1, data_to_send, size, "open", &msg, NULL);
 	free(data_to_send);
 
 	if (fd_1 < 0 || fd_2 < 0){
@@ -376,8 +483,8 @@ static int net_read(const char* path, char *buf, size_t size, off_t offset,
 	struct buf cur = {
 		.read_buf = buf
 	};
-	int bytes_to_read = send_data_buf(0, data_to_send, buf_size, "read", &msg, &cur);
-
+	int bytes_to_read = receive_data_from_storage(0, data_to_send, buf_size, "read", &msg, &cur);
+	send_keep_alive(1);
 	free(data_to_send);
 
 	return bytes_to_read;
@@ -395,11 +502,12 @@ static int net_release(const char* path, struct fuse_file_info *fi){
 	};
 
 	int size = get_fd_data(&msg, &data_to_send);
-	send_data_buf(0, data_to_send, size, "close", &msg, NULL);
+	receive_data_from_storage(0, data_to_send, size, "close", &msg, NULL);
 
 	msg.fh = *(int*)((char*)(&fi->fh) + sizeof(int));
 	size = get_fd_data(&msg, &data_to_send);
-	send_data_buf(1, data_to_send, size, "close", &msg, NULL);
+	receive_data_from_storage(1, data_to_send, size, "close", &msg, NULL);
+
     free(data_to_send);
 	return 0;
 }
@@ -413,8 +521,8 @@ static int net_rename(const char* from, const char* to){
 	};
 	int size = get_rename_data(&msg, &data_to_send);
 	
-	send_data_buf(0, data_to_send, size, "rename", &msg, NULL);
-	send_data_buf(1, data_to_send, size, "rename", &msg, NULL);
+	receive_data_from_storage(0, data_to_send, size, "rename", &msg, NULL);
+	receive_data_from_storage(1, data_to_send, size, "rename", &msg, NULL);
 
     free(data_to_send);
 
@@ -429,8 +537,8 @@ static int net_unlink(const char* path){
 	};
 
 	int size = get_path_data(&msg, &data_to_send);
-	send_data_buf(0, data_to_send, size, "unlink", &msg, NULL);
-	send_data_buf(1, data_to_send, size, "unlink", &msg, NULL);
+	receive_data_from_storage(0, data_to_send, size, "unlink", &msg, NULL);
+	receive_data_from_storage(1, data_to_send, size, "unlink", &msg, NULL);
 
     free(data_to_send);
 	return 0;
@@ -444,8 +552,8 @@ static int net_rmdir(const char* path){
 	};
 
 	int size = get_path_data(&msg, &data_to_send);
-	send_data_buf(0, data_to_send, size, "remove dir ", &msg, NULL);
-	send_data_buf(1, data_to_send, size, "remove dir ", &msg, NULL);
+	receive_data_from_storage(0, data_to_send, size, "remove dir ", &msg, NULL);
+	receive_data_from_storage(1, data_to_send, size, "remove dir ", &msg, NULL);
 
     free(data_to_send);
 	return 0;
@@ -459,8 +567,8 @@ static int net_mkdir(const char* path, mode_t mode){
 		.mode = mode
 	};
 	int size = get_mode_data(&msg, &data_to_send);
-	send_data_buf(0, data_to_send, size, "make dir ", &msg, NULL);
-	send_data_buf(1, data_to_send, size, "make dir ", &msg, NULL);
+	receive_data_from_storage(0, data_to_send, size, "make dir ", &msg, NULL);
+	receive_data_from_storage(1, data_to_send, size, "make dir ", &msg, NULL);
 
     free(data_to_send);
 	return 0;
@@ -481,7 +589,6 @@ static int net_write(const char* path, const char *buf, size_t size, off_t offse
 		.buf = (char*)buf,
 		.path = (char *)path
 	};
-
 	int buf_size = get_write_data(&msg, &data_to_send);
 	struct buf server_1 = {
 		.hash = 0
@@ -489,11 +596,11 @@ static int net_write(const char* path, const char *buf, size_t size, off_t offse
 	struct buf server_2 = {
 		.hash = 0
 	};
-	int bytes_written_1 = send_data_buf(0, data_to_send, buf_size, "write", &msg, &server_1);
+	int bytes_written_1 = receive_data_from_storage(0, data_to_send, buf_size, "write", &msg, &server_1);
 
 	msg.fh = *(int*)((char*)(&fi->fh) + sizeof(int));
 	buf_size = get_write_data(&msg, &data_to_send);
-	int bytes_written_2 = send_data_buf(1, data_to_send, buf_size, "write", &msg, &server_2);
+	int bytes_written_2 = receive_data_from_storage(1, data_to_send, buf_size, "write", &msg, &server_2);
 	if (server_1.hash != server_2.hash){
 		printf("%s %s \n", "Error while writing file ", path);
 	}
@@ -509,55 +616,56 @@ static int net_write(const char* path, const char *buf, size_t size, off_t offse
 }
 
 static int net_opendir(const char* path, struct fuse_file_info* fi){
-	if (fi->fh != 0 || strcmp(path, "/") == 0){
-		return 0;
-	}
-	char * data_to_send = NULL;
-	struct msg msg = {
-		.type = 9,
-		.path = (char*)path
-	};
+	// printf("%s\n", "opendir");
+	// if (fi->fh != 0 || strcmp(path, "/") == 0){
+	// 	return 0;
+	// }
+	// char * data_to_send = NULL;
+	// struct msg msg = {
+	// 	.type = 9,
+	// 	.path = (char*)path
+	// };
 
-	int size = get_path_data(&msg, &data_to_send);
-	struct fuse_context *context = fuse_get_context();
-	struct auxdata data = *(struct auxdata *)context->private_data;
-	int fd = data.fds[0];
+	// int size = get_path_data(&msg, &data_to_send);
+	// struct fuse_context *context = fuse_get_context();
+	// struct auxdata data = *(struct auxdata *)context->private_data;
+	// int fd = data.fds[0];
 
-	send(fd, data_to_send, size, 0);
-    recv(fd, &fi->fh, sizeof(intptr_t), 0);
-    if (fi->fh == 0){
-		return -ENOENT;
-	}
-	time_t current_time = time(NULL);
-	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
-        data.ip_ports[0].port, "open dir  ", path);
+	// send(fd, data_to_send, size, 0);
+ //    recv(fd, &fi->fh, sizeof(intptr_t), 0);
+ //    if (fi->fh == 0){
+	// 	return -ENOENT;
+	// }
+	// time_t current_time = time(NULL);
+	// printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
+ //        data.ip_ports[0].port, "open dir  ", path);
 
-    free(data_to_send);
+ //    free(data_to_send);
     return 0;
 }
 
 static int net_releasedir(const char* path, struct fuse_file_info *fi){
-	char * data_to_send = NULL;
-	struct msg msg = {
-		.type = 10,
-		.dir = fi->fh
-	};
-	int size = get_dir_data(&msg, &data_to_send);
-	struct fuse_context *context = fuse_get_context();
-	struct auxdata data = *(struct auxdata *)context->private_data;
-	int fd = data.fds[0];
+	// char * data_to_send = NULL;
+	// struct msg msg = {
+	// 	.type = 10,
+	// 	.dir = fi->fh
+	// };
+	// int size = get_dir_data(&msg, &data_to_send);
+	// struct fuse_context *context = fuse_get_context();
+	// struct auxdata data = *(struct auxdata *)context->private_data;
+	// int fd = data.fds[0];
 
-	send(fd, data_to_send, size, 0);
-	int res;
-    recv(fd, &res, sizeof(int), 0);
-    if (res == 0){
-    	fi->fh = 0;
-		time_t current_time = time(NULL);
-    	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
-            data.ip_ports[0].port, "release dir  ", path);
-    }
+	// send(fd, data_to_send, size, 0);
+	// int res;
+ //    recv(fd, &res, sizeof(int), 0);
+ //    if (res == 0){
+ //    	fi->fh = 0;
+	// 	time_t current_time = time(NULL);
+ //    	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
+ //            data.ip_ports[0].port, "release dir  ", path);
+ //    }
 
-    free(data_to_send);
+ //    free(data_to_send);
 
 	return 0;
 
@@ -572,10 +680,10 @@ static int net_create(const char * path, mode_t modes, struct fuse_file_info * f
 		.mode = modes
 	};
 	int size = get_create_data(&msg, &data_to_send);
-	int fd_1 = send_data_buf(0, data_to_send, size, "create ", &msg, NULL);
-	int fd_2 = send_data_buf(1, data_to_send, size, "create ", &msg, NULL);
+	int fd_1 = receive_data_from_storage(0, data_to_send, size, "create ", &msg, NULL);
+	int fd_2 = receive_data_from_storage(1, data_to_send, size, "create ", &msg, NULL);
 	free(data_to_send);
-
+	
 	if (fd_1 < 0 || fd_2 < 0){
 		return -ENOENT;
 	}
@@ -592,9 +700,16 @@ static int net_truncate(const char* path, off_t size){
 		.path = (char*)path,
 		.size = size
 	};
+	
 	int buf_size = get_truncate_data(&msg, &data_to_send);
-	send_data_buf(0, data_to_send, buf_size, "truncate ", &msg, NULL);
-	send_data_buf(1, data_to_send, buf_size, "truncate ", &msg, NULL);
+	struct buf server_1 = {
+		.hash = 0
+	};
+	struct buf server_2 = {
+		.hash = 0
+	};
+	receive_data_from_storage(0, data_to_send, buf_size, "truncate ", &msg, &server_1);
+	receive_data_from_storage(1, data_to_send, buf_size, "truncate ", &msg, &server_2);
 	free(data_to_send);
 
 	return 0;
@@ -627,7 +742,8 @@ static int net_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		.path = (char*)path
 	};
 	int size = get_path_data(&msg, &data_to_send);
-	send_data_readdir(0, data_to_send, size, "readdir", (char*)path, &buf, filler);
+	receive_readdir_from_storage(0, data_to_send, size, "readdir", (char*)path, &buf, filler);
+	send_keep_alive(1);
 
 	return 0;
 }

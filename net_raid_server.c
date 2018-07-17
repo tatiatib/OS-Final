@@ -16,11 +16,8 @@
 #include <sys/xattr.h>
 #include <dirent.h>
 #include <errno.h>
-// #include <openssl/sha.h>
-// #include "sha.h"
-// #include "uthash.h"
 #define BACKLOG 10
-#define FUNC_NUMB 14
+#define FUNC_NUMB 15
 
 struct msg{
 	int fd;
@@ -49,12 +46,13 @@ void net_closedir(int cfd, char * buf, int type, char * path);
 void net_create(int cfd, char * buf, int type, char * path);
 void net_truncate(int cfd, char * buf, int type, char * path);
 void net_readdir(int cfd, char * buf, int type, char * path);
+void net_hostwap_storage(int cfd, char * buf, int type, char * path);
 
 typedef void (*fun)(int cfd, char * buf, int type, char * path);
 
 static fun functions[FUNC_NUMB] = {net_get_attr, net_open, net_read, net_close,
 	net_rename, net_unlink, net_rmdir,  net_mkdir, net_write, net_opendir, 
-	net_closedir, net_create, net_truncate, net_readdir};
+	net_closedir, net_create, net_truncate, net_readdir, net_hostwap_storage};
 
 static struct msg * deserialize_path(char * buf, int type){
 	struct msg * data = malloc(sizeof(struct msg));
@@ -67,7 +65,7 @@ static struct msg * deserialize_path(char * buf, int type){
 	}
 	if (type == 12){
 		int pointer = sizeof(int) + sizeof(size_t) + length + 1;
-		data->size = *(int*)(buf + pointer);		
+		data->size = *(int*)(buf + pointer);	
 	}
 
 	return data;
@@ -152,6 +150,7 @@ unsigned long hash_djb(unsigned char *str){
 	unsigned char * buffer = malloc(size);
 	read(fd, buffer, size);
 	buffer[size] = '\0';
+	
 	*hash = hash_djb(buffer);
 	free(buffer);
 	close(fd);
@@ -195,7 +194,6 @@ void net_get_attr(int cfd, char * buf_data, int type, char * mountpoint){
 	char temp[strlen(mountpoint) + strlen(data->path)];
 	strcpy(temp, mountpoint);
 	strcat(temp, data->path);
-
 	struct stat buf;
 	int res = stat(temp, &buf);
 	
@@ -210,6 +208,7 @@ void net_read(int cfd, char * buf_data, int type, char * mountpoint){
 	struct msg * data = deserialize_read(buf_data);
 	char * buf = malloc(data->size + sizeof(int));
 	size_t bytes_read = pread(data->fd, (char*)buf + sizeof(int), data->size, data->offset);
+
 	memcpy(buf, &bytes_read, sizeof(int));
     send(cfd, buf, sizeof(int) + bytes_read, 0);
     free(buf);
@@ -301,7 +300,16 @@ void net_truncate(int cfd, char * buf, int type, char * mountpoint){
 	strcpy(temp, mountpoint);
 	strcat(temp, data->path);
 	int ret = truncate(temp, data->size);
-	send(cfd, &ret, sizeof(int), 0);
+	unsigned long hash;
+	compute_hash(temp, &hash);
+	if (setxattr(temp, "user.hash", &hash, sizeof(unsigned long), 0) == -1){
+		perror(strerror(errno));
+	}
+	char * resp = malloc(sizeof(int) + sizeof(unsigned long));
+	memcpy(resp, &ret, sizeof(int));
+	memcpy(resp + sizeof(int), &hash, sizeof(unsigned long));
+	send(cfd, resp, sizeof(int) + sizeof(unsigned long), 0);
+	
 
 }
 
@@ -312,7 +320,7 @@ void net_write(int cfd, char * buf, int type, char * mountpoint){
 	strcat(temp, data->path);
 
 	size_t written = pwrite(data->fd, data->buf, data->size, data->offset);
-
+	
 	unsigned long hash;
 	compute_hash(temp, &hash);
 	if (fsetxattr(data->fd, "user.hash", &hash, sizeof(unsigned long), 0) == -1){
@@ -350,7 +358,25 @@ void net_readdir(int cfd, char * buf, int type, char * mountpoint){
     send(cfd, &ret, sizeof(int), 0);	
 
 }
+void net_hostwap_storage(int cfd, char * buf, int type, char * path){
+	printf("%s\n", "in net_hostwap_storage");
 
+}
+void net_dump(int fd, char * path){
+	DIR *d;
+	struct dirent *dir;
+	struct stat path_stat;
+	d = opendir(path);
+	if (d) {
+		while ((dir = readdir(d)) != NULL) {
+		  printf("%s\n", dir->d_name);
+		  stat(dir->d_name, &path_stat);
+		  
+		}
+		closedir(d);
+	}
+
+}
 
 void * serve_client(void * data){
 	char * path = *(char **)data;
@@ -363,6 +389,16 @@ void * serve_client(void * data){
         if (received_size <= 0){
             free(data);
     		break;
+        }
+        if (data_size == 1){
+        	send(cfd, &data_size, sizeof(int), 0 );
+        	continue;
+
+        }
+        if (data_size == -1){
+        	printf("%s\n", "time to dump");
+        	net_dump(cfd, path);
+        	continue;
         }
         char buf[data_size];
         received_size = recv(cfd, buf, data_size, 0);
