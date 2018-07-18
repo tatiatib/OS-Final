@@ -257,6 +257,7 @@ void net_mkdir(int cfd, char * buf, int type, char * mountpoint){
 	char temp[strlen(mountpoint) + strlen(data->path)];
 	strcpy(temp, mountpoint);
 	strcat(temp, data->path);
+
 	int ret = mkdir(temp, data->mode);
 	send(cfd, &ret, sizeof(int), 0);	
 }
@@ -288,9 +289,10 @@ void net_create(int cfd, char * buf, int type, char * mountpoint){
 	char temp[strlen(mountpoint) + strlen(data->path)];
 	strcpy(temp, mountpoint);
 	strcat(temp, data->path);
-
+	
 	mknod(temp, data->mode, S_IFREG);
 	int fd = open(temp, data->flags);
+	
 	send(cfd, &fd, sizeof(int), 0);
 }
 
@@ -358,24 +360,73 @@ void net_readdir(int cfd, char * buf, int type, char * mountpoint){
     send(cfd, &ret, sizeof(int), 0);	
 
 }
-void net_hostwap_storage(int cfd, char * buf, int type, char * path){
-	printf("%s\n", "in net_hostwap_storage");
+void net_hostwap_storage(int cfd, char * buf, int type, char * mountpoint){
+	int length = *(int*)(buf + sizeof(int));
+	char path[length + 1];
+	strcpy(path, buf + sizeof(int) *2);
+	int file = *(int*)(buf + sizeof(int) *2 + length + 1);
+	char temp[strlen(mountpoint) + strlen(path)];
+	strcpy(temp, mountpoint);
+	strcat(temp, path);
+	if (file){
+		mknod(temp, 33204, S_IFREG);
+	}else{
+		mkdir(temp, 509);
+	}
 
 }
-void net_dump(int fd, char * path){
+//0 for dir
+//1 for file
+static void send_file_packet(int fd, char * path, int type){
+	int size = sizeof(int) * 3  + strlen(path) + 1;
+	char * msg = malloc(size + sizeof(int) * 2);
+	int packet_size = size + sizeof(int);
+	memcpy(msg, &packet_size, sizeof(int));
+	memcpy(msg + sizeof(int), &size, sizeof(int));
+	int syscall_numb = 14;
+	memcpy(msg + sizeof(int) * 2, &syscall_numb, sizeof(int));
+	int length = strlen(path);
+	memcpy(msg + sizeof(int) * 3, &length, sizeof(int));
+	memcpy(msg + sizeof(int) * 4, path, length + 1);
+	memcpy(msg + sizeof(int) * 4 + length + 1, &type, sizeof(int));
+	send(fd, msg, size + sizeof(int) * 2, 0);
+
+}	
+
+static void dump_tree(int fd, char * path){
 	DIR *d;
 	struct dirent *dir;
 	struct stat path_stat;
 	d = opendir(path);
+
 	if (d) {
 		while ((dir = readdir(d)) != NULL) {
-		  printf("%s\n", dir->d_name);
-		  stat(dir->d_name, &path_stat);
-		  
+			if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0){
+				continue;
+			}
+			char temp[strlen(path) + strlen(dir->d_name) + 1];
+			strcpy(temp, path);
+			strcat(temp, "/");
+			strcat(temp, dir->d_name);
+			stat(temp, &path_stat);
+			if (S_ISDIR(path_stat.st_mode)){
+				char * ret = strchr(temp, '/');
+				send_file_packet(fd, ret, 0);
+				dump_tree(fd, temp);
+			}else{
+				char * ret = strchr(temp, '/');
+				send_file_packet(fd, ret, 1);
+			}
 		}
 		closedir(d);
 	}
+}
 
+void net_dump(int fd, char * path){
+	dump_tree(fd, path);	
+	int length = 0;
+
+	send(fd, &length, sizeof(int), 0);
 }
 
 void * serve_client(void * data){
@@ -396,7 +447,6 @@ void * serve_client(void * data){
 
         }
         if (data_size == -1){
-        	printf("%s\n", "time to dump");
         	net_dump(cfd, path);
         	continue;
         }

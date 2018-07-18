@@ -155,63 +155,57 @@ int get_truncate_data(struct msg * data, char ** res){
 }
 
 int get_timeout(int fd, int fd_index, struct auxdata data){
-	close(fd);
-	fd = socket(AF_INET, SOCK_STREAM, 0);
-	// int error = 0, ret = 0;
-    // fd_set fdset;
-	int ret = 0;
-    // struct timeval ts;
-    struct sockaddr_in addr;
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(data.ip_ports[fd_index].port);
-	inet_aton(data.ip_ports[fd_index].ip, (struct in_addr *)&addr.sin_addr.s_addr);
+	time_t start = time(NULL);
+	time_t end = time(NULL);
+	printf("%d\n", difftime(start, end));
+	return -1;
+	// close(fd);
+	// fd = socket(AF_INET, SOCK_STREAM, 0);
+	// fcntl(fd, F_SETFL, O_NONBLOCK);
 
-    // ts.tv_sec = data.timeout;
-    // ts.tv_usec = 0;
-	// FD_ZERO(&fdset);
-    // FD_SET(fd, &fdset);
+ //    fd_set fdset;
+	// int ret = 0;
+ //    struct timeval ts;
+ //    struct sockaddr_in addr;
+	// addr.sin_family = AF_INET;
+	// addr.sin_port = htons(data.ip_ports[fd_index].port);
+	// inet_aton(data.ip_ports[fd_index].ip, (struct in_addr *)&addr.sin_addr.s_addr);
 
-    // fcntl(fd, F_SETFL, O_NONBLOCK);
+ //    ret = connect(fd, (struct sockaddr *) &addr, sizeof(struct sockaddr_in));
+ //    FD_ZERO(&fdset);
+ //    FD_SET(fd, &fdset);
+ // 	ts.tv_sec = data.timeout;
+ //    ts.tv_usec = 0;
 
-	 //initiate non-blocking connect
-	sleep(data.timeout);
-    ret = connect(fd, (struct sockaddr *) &addr, sizeof(struct sockaddr_in));
-    if (ret == -1 && errno != EINPROGRESS){
-    	printf("%s\n", "hiii");
-        return -1;
-    }
     
-    if(ret == 0){
-    	time_t current_time = time(NULL);
-		printf("[%s] %s %s:%d connection established\n", strtok(ctime(&current_time), "\n"), data.diskname, 
-		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);	
-		return 0;
-    }
+ //    if(ret == 0){
+ //    	time_t current_time = time(NULL);
+	// 	printf("[%s] %s %s:%d connection established\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+	// 	data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);	
+	// 	return 0;
+ //    }
 
-    // //we are waiting for connect to complete now
+ //    // //we are waiting for connect to complete now
+ //    if (select(fd + 1, NULL, &fdset, NULL, &ts) == 1)
+ //    {
+ //        int so_error;
+ //        socklen_t len = sizeof so_error;
 
-    // if( (ret = select(fd + 1, NULL, &fdset, NULL, &ts)) < 0){
-    // 	printf("%s\n", "idk");
-    //     return -1;
-    // }
-    // if(ret == 0){   //we had a timeout
-    //     errno = ETIMEDOUT;
-    //     printf("%s\n", "timeout");
-    //     return -1;
-    // }
+ //        getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len);
 
+ //        if (so_error == 0) {
+ //            printf("%s\n", "connection established");
+ //        }else{
+ //        	printf("%s\n", "here?");
+ //        	return -1;
+ //        }
+ //    }
 
-    // //we had a positivite return so a descriptor is ready
-   	// socklen_t len = sizeof error;
-    // if(getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) < 0)
-    //         return -1;
-    
-
-    // if(error){  //check if we had a socket error
-    //     errno = error;
-    //     return -1;
-    // }
-	return 0;
+ //    long arg = fcntl(fd, F_GETFL, NULL); 
+	// arg &= (~O_NONBLOCK); 
+	// fcntl(fd, F_SETFL, arg); 	
+ 
+	// return 0;
 }
 
 static void swap_servers(int fd_index){
@@ -245,13 +239,14 @@ static int check_connection(int fd){
 static void rewrite(int from, int to){
 	int dump_msg = -1;
 	send(from, &dump_msg, sizeof(int), 0);
-	// int length;
-	// recv(from, &length, sizeof(int), 0);
-	// if (length > 0){
-	// 	void * buf = malloc(length);
-	// 	recv(from, buf, length, 0);
-	// 	send(to, buf, length, 0);
-	// } 
+	int length;
+	recv(from, &length, sizeof(int), 0);
+	while (length > 0){
+		void * buf = malloc(length);
+		recv(from, buf, length, 0);
+		send(to, buf, length, 0);
+		recv(from, &length, sizeof(int), 0);
+	} 
 }
 
 static void rewrite_to_hotswap(int fd_index){
@@ -269,8 +264,9 @@ static void rewrite_to_hotswap(int fd_index){
     		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
 		return;
 	}
-	printf("%s\n", "rewriting...............");
+	printf("%s\n", "Rewriting...............");
 	rewrite(data.fds[1-fd_index], data.fds[fd_index]);
+	printf("%s\n", "Rewriting Done");
 }
 
 static int fill_buf(int fd, int fd_index, struct auxdata data, struct buf * received_buf, 
@@ -293,6 +289,7 @@ static int fill_buf(int fd, int fd_index, struct auxdata data, struct buf * rece
 	if (received == 0){
 		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
 			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+
 		if (get_timeout(fd, fd_index, data) == -1){
 			swap_servers(fd_index);
 			rewrite_to_hotswap(fd_index);
@@ -332,11 +329,11 @@ static int receive_data_from_storage(int fd_index, char * data_to_send, int size
     	if (get_timeout(fd, fd_index, data) == -1){
     		swap_servers(fd_index);
     		rewrite_to_hotswap(fd_index);
-    		return -2;
-    	}else{
-    		return receive_data_from_storage(fd_index, data_to_send, size, log_msg, msg, 
-    			received_buf);
     	}
+    
+		return receive_data_from_storage(fd_index, data_to_send, size, log_msg, msg, 
+			received_buf);
+
     }
 
     if (msg->type == 0){
@@ -384,6 +381,10 @@ static void send_keep_alive(int fd_index){
 		time_t current_time = time(NULL);
 		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+		if (get_timeout(fd, fd_index, data) == -1){
+    		swap_servers(fd_index);
+    		rewrite_to_hotswap(fd_index);
+    	}
 
 	}
 
@@ -566,6 +567,7 @@ static int net_mkdir(const char* path, mode_t mode){
 		.path = (char*)path,
 		.mode = mode
 	};
+
 	int size = get_mode_data(&msg, &data_to_send);
 	receive_data_from_storage(0, data_to_send, size, "make dir ", &msg, NULL);
 	receive_data_from_storage(1, data_to_send, size, "make dir ", &msg, NULL);
