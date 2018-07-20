@@ -17,7 +17,7 @@
 #include <dirent.h>
 #include <errno.h>
 #define BACKLOG 10
-#define FUNC_NUMB 15
+#define FUNC_NUMB 16
 
 struct msg{
 	int fd;
@@ -47,12 +47,12 @@ void net_create(int cfd, char * buf, int type, char * path);
 void net_truncate(int cfd, char * buf, int type, char * path);
 void net_readdir(int cfd, char * buf, int type, char * path);
 void net_hostwap_storage(int cfd, char * buf, int type, char * path);
-
+void net_hotswap_file_content(int cfd, char * buf, int type, char * path);
 typedef void (*fun)(int cfd, char * buf, int type, char * path);
 
 static fun functions[FUNC_NUMB] = {net_get_attr, net_open, net_read, net_close,
 	net_rename, net_unlink, net_rmdir,  net_mkdir, net_write, net_opendir, 
-	net_closedir, net_create, net_truncate, net_readdir, net_hostwap_storage};
+	net_closedir, net_create, net_truncate, net_readdir, net_hostwap_storage, net_hotswap_file_content};
 
 static struct msg * deserialize_path(char * buf, int type){
 	struct msg * data = malloc(sizeof(struct msg));
@@ -86,6 +86,7 @@ static struct msg * deserialize_write(char * buf){
 	strcpy(data->path,	buf + sizeof(int)*5);
 	data->buf = malloc(data->size);
 	memcpy(data->buf, (buf + sizeof(int)*5 + length + 1), data->size);
+	data->buf[data->size] = '\0';
 	return data;
 }
 
@@ -150,7 +151,6 @@ unsigned long hash_djb(unsigned char *str){
 	unsigned char * buffer = malloc(size);
 	read(fd, buffer, size);
 	buffer[size] = '\0';
-	
 	*hash = hash_djb(buffer);
 	free(buffer);
 	close(fd);
@@ -320,12 +320,12 @@ void net_write(int cfd, char * buf, int type, char * mountpoint){
 	char temp[strlen(mountpoint) + strlen(data->path)];
 	strcpy(temp, mountpoint);
 	strcat(temp, data->path);
-
 	size_t written = pwrite(data->fd, data->buf, data->size, data->offset);
 	
 	unsigned long hash;
 	compute_hash(temp, &hash);
 	if (fsetxattr(data->fd, "user.hash", &hash, sizeof(unsigned long), 0) == -1){
+
 		perror(strerror(errno));
 	}
 	char * resp = malloc(sizeof(int) + sizeof(unsigned long));
@@ -375,6 +375,30 @@ void net_hostwap_storage(int cfd, char * buf, int type, char * mountpoint){
 	}
 
 }
+void net_hotswap_file_content(int cfd, char * buf, int type, char * mountpoint){
+	int size = *(int *)(buf + sizeof(int));
+	char * path = malloc(size);
+	memcpy(path, (buf + sizeof(int) * 2), size);
+	int data_size = *(int*)(buf + sizeof(int) * 2 + size);
+	char * data = malloc(data_size);
+	memcpy(data, (buf + sizeof(int) * 3 + size), data_size);
+
+	char temp[strlen(mountpoint) + strlen(path)];
+	strcpy(temp, mountpoint);
+	strcat(temp, path);
+
+	int fd = open(temp, O_WRONLY);
+	write(fd, data, data_size);
+	close(fd);
+
+	unsigned long hash;
+	compute_hash(temp, &hash);
+	if (setxattr(temp, "user.hash", &hash, sizeof(unsigned long), 0) == -1){
+		perror(strerror(errno));
+	}
+
+
+}
 //0 for dir
 //1 for file
 static void send_file_packet(int fd, char * path, int type){
@@ -392,6 +416,36 @@ static void send_file_packet(int fd, char * path, int type){
 	send(fd, msg, size + sizeof(int) * 2, 0);
 
 }	
+
+static void send_file_content(int cfd, char * full_path, char * path){
+	struct stat st;
+    stat(full_path, &st);
+    int file_length = st.st_size;
+    if (file_length == 0)
+    	return;
+    char * buf = malloc(file_length);
+    int fd = open(full_path, O_RDONLY);
+    read(fd, buf, file_length);
+    buf[file_length] = '\0';
+    close(fd);
+
+    int size = sizeof(int) * 3 + file_length + strlen(path);
+    void * packet = malloc(size + sizeof(int) * 2);
+    int packet_size = size + sizeof(int);
+    memcpy(packet, &packet_size, sizeof(int));
+    memcpy(packet + sizeof(int), &size, sizeof(int));
+    int type = 15;
+    memcpy(packet + sizeof(int) * 2, &type, sizeof(int));
+    int path_length = strlen(path);
+    memcpy(packet + sizeof(int) * 3, &path_length, sizeof(int));
+    strcpy(packet + sizeof(int) * 4, path);
+    memcpy(packet + sizeof(int) * 4 + path_length, &file_length, sizeof(int));
+    memcpy(packet + sizeof(int) * 5 + path_length, buf, file_length);
+    send(cfd, packet, size + sizeof(int) * 2, 0);
+    free(packet);
+    free(buf);
+}
+
 
 static void dump_tree(int fd, char * path){
 	DIR *d;
@@ -416,6 +470,7 @@ static void dump_tree(int fd, char * path){
 			}else{
 				char * ret = strchr(temp, '/');
 				send_file_packet(fd, ret, 1);
+				send_file_content(fd, temp, ret);
 			}
 		}
 		closedir(d);
@@ -457,6 +512,7 @@ void * serve_client(void * data){
     		break;
         }
         int type = *(int*)buf;
+        // printf("type %d\n", type);
 		functions[type](cfd, buf, type, path);
 	}
 	return NULL;

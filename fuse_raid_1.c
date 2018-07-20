@@ -155,57 +155,30 @@ int get_truncate_data(struct msg * data, char ** res){
 }
 
 int get_timeout(int fd, int fd_index, struct auxdata data){
+	int ret;
 	time_t start = time(NULL);
+	printf("[%s] %s %s:%d Trying to connect for %d seconds\n", strtok(ctime(&start), "\n"), data.diskname, 
+				data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port, data.timeout);
+	close(fd);
+	fd = socket(AF_INET, SOCK_STREAM, 0);
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(data.ip_ports[fd_index].port);
+	inet_aton(data.ip_ports[fd_index].ip, (struct in_addr *)&addr.sin_addr.s_addr);
+
 	time_t end = time(NULL);
-	printf("%d\n", difftime(start, end));
+	while(difftime(end, start) < (double)data.timeout){
+		ret = connect(fd, (struct sockaddr *) &addr, sizeof(struct sockaddr_in));
+		if (ret == 0){
+			printf("[%s] %s %s:%d connection established\n", strtok(ctime(&end), "\n"), data.diskname, 
+				data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);	
+			return 0;
+		}
+		end = time(NULL);
+	}
+
+	
 	return -1;
-	// close(fd);
-	// fd = socket(AF_INET, SOCK_STREAM, 0);
-	// fcntl(fd, F_SETFL, O_NONBLOCK);
-
- //    fd_set fdset;
-	// int ret = 0;
- //    struct timeval ts;
- //    struct sockaddr_in addr;
-	// addr.sin_family = AF_INET;
-	// addr.sin_port = htons(data.ip_ports[fd_index].port);
-	// inet_aton(data.ip_ports[fd_index].ip, (struct in_addr *)&addr.sin_addr.s_addr);
-
- //    ret = connect(fd, (struct sockaddr *) &addr, sizeof(struct sockaddr_in));
- //    FD_ZERO(&fdset);
- //    FD_SET(fd, &fdset);
- // 	ts.tv_sec = data.timeout;
- //    ts.tv_usec = 0;
-
-    
- //    if(ret == 0){
- //    	time_t current_time = time(NULL);
-	// 	printf("[%s] %s %s:%d connection established\n", strtok(ctime(&current_time), "\n"), data.diskname, 
-	// 	data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);	
-	// 	return 0;
- //    }
-
- //    // //we are waiting for connect to complete now
- //    if (select(fd + 1, NULL, &fdset, NULL, &ts) == 1)
- //    {
- //        int so_error;
- //        socklen_t len = sizeof so_error;
-
- //        getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len);
-
- //        if (so_error == 0) {
- //            printf("%s\n", "connection established");
- //        }else{
- //        	printf("%s\n", "here?");
- //        	return -1;
- //        }
- //    }
-
- //    long arg = fcntl(fd, F_GETFL, NULL); 
-	// arg &= (~O_NONBLOCK); 
-	// fcntl(fd, F_SETFL, arg); 	
- 
-	// return 0;
 }
 
 static void swap_servers(int fd_index){
@@ -249,7 +222,7 @@ static void rewrite(int from, int to){
 	} 
 }
 
-static void rewrite_to_hotswap(int fd_index){
+static int rewrite_to_hotswap(int fd_index){
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata data = *(struct auxdata *)context->private_data;
 	int fd = data.fds[fd_index];
@@ -262,11 +235,15 @@ static void rewrite_to_hotswap(int fd_index){
 		time_t current_time = time(NULL);
 		printf("[%s] %s %s:%d hotswap is not connected\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
-		return;
+		char error_msg[] = "";
+		strcat(error_msg, "hotswap wasn't connected, while trying to rewrite data to hotswap server\n");
+		write(data.errorlog, error_msg, strlen(error_msg));
+		return 1;
 	}
 	printf("%s\n", "Rewriting...............");
 	rewrite(data.fds[1-fd_index], data.fds[fd_index]);
 	printf("%s\n", "Rewriting Done");
+	return 0;
 }
 
 static int fill_buf(int fd, int fd_index, struct auxdata data, struct buf * received_buf, 
@@ -292,8 +269,9 @@ static int fill_buf(int fd, int fd_index, struct auxdata data, struct buf * rece
 
 		if (get_timeout(fd, fd_index, data) == -1){
 			swap_servers(fd_index);
-			rewrite_to_hotswap(fd_index);
-			return 1;
+			if (rewrite_to_hotswap(fd_index))  //hotswap cant connect
+				return 0;
+			else return 1;
 		}
 	}
 
@@ -321,14 +299,16 @@ static int receive_data_from_storage(int fd_index, char * data_to_send, int size
     }
     printf("\n");
   
-    int status_code;
+    int status_code = -1;
     int received = recv(fd, &status_code, sizeof(int), 0);
     if (received == 0){
     	printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
     	if (get_timeout(fd, fd_index, data) == -1){
     		swap_servers(fd_index);
-    		rewrite_to_hotswap(fd_index);
+    		if (rewrite_to_hotswap(fd_index)){
+    			return -1;
+    		}
     	}
     
 		return receive_data_from_storage(fd_index, data_to_send, size, log_msg, msg, 
@@ -389,8 +369,8 @@ static void send_keep_alive(int fd_index){
 	}
 
 }
-static void receive_readdir_from_storage(int fd_index, char * data_to_send, int size, char * log_msg, char* path,
-		void ** buf, fuse_fill_dir_t filler){
+static int receive_readdir_from_storage(int fd_index, char * data_to_send, int size, char * log_msg, 
+	char* path, void ** buf, fuse_fill_dir_t filler){
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata data = *(struct auxdata *)context->private_data;
 	int fd = data.fds[fd_index];
@@ -405,6 +385,16 @@ static void receive_readdir_from_storage(int fd_index, char * data_to_send, int 
 	if (received == 0){
 		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+		if (get_timeout(fd, fd_index, data) == -1){
+    		swap_servers(fd_index);
+    		if (rewrite_to_hotswap(fd_index)){
+    			return -1;
+    		}else{
+    			return receive_readdir_from_storage(fd_index, data_to_send, size, log_msg, path, buf, filler);
+    		}
+
+    	}
+		
 	}
 	while(name_length != 0){
 		char * name = malloc(name_length + 1);
@@ -422,6 +412,8 @@ static void receive_readdir_from_storage(int fd_index, char * data_to_send, int 
 		}
 		free(name);
 	}
+
+	return 0;
 
 }
 
@@ -591,6 +583,7 @@ static int net_write(const char* path, const char *buf, size_t size, off_t offse
 		.buf = (char*)buf,
 		.path = (char *)path
 	};
+
 	int buf_size = get_write_data(&msg, &data_to_send);
 	struct buf server_1 = {
 		.hash = 0
