@@ -17,7 +17,7 @@
 #include <dirent.h>
 #include <errno.h>
 #define BACKLOG 10
-#define FUNC_NUMB 16
+#define FUNC_NUMB 17
 
 struct msg{
 	int fd;
@@ -48,11 +48,14 @@ void net_truncate(int cfd, char * buf, int type, char * path);
 void net_readdir(int cfd, char * buf, int type, char * path);
 void net_hostwap_storage(int cfd, char * buf, int type, char * path);
 void net_hotswap_file_content(int cfd, char * buf, int type, char * path);
+void net_restore_file(int cfd, char * buf, int type, char * path);
+
 typedef void (*fun)(int cfd, char * buf, int type, char * path);
 
 static fun functions[FUNC_NUMB] = {net_get_attr, net_open, net_read, net_close,
 	net_rename, net_unlink, net_rmdir,  net_mkdir, net_write, net_opendir, 
-	net_closedir, net_create, net_truncate, net_readdir, net_hostwap_storage, net_hotswap_file_content};
+	net_closedir, net_create, net_truncate, net_readdir, net_hostwap_storage,
+	 net_hotswap_file_content, net_restore_file};
 
 static struct msg * deserialize_path(char * buf, int type){
 	struct msg * data = malloc(sizeof(struct msg));
@@ -184,12 +187,11 @@ void net_open(int cfd, char * buf, int type, char * mountpoint){
 		int err = -1;
 		send(cfd, &err, sizeof(int), 0);	
 	}
-	
+	free(data);
 	
 }
 
 void net_get_attr(int cfd, char * buf_data, int type, char * mountpoint){
-	
 	struct msg * data = deserialize_path(buf_data, type);
 	char temp[strlen(mountpoint) + strlen(data->path)];
 	strcpy(temp, mountpoint);
@@ -202,6 +204,7 @@ void net_get_attr(int cfd, char * buf_data, int type, char * mountpoint){
 	memcpy(data_to_send + sizeof(int), &buf, sizeof(struct stat));
 	send(cfd, data_to_send, sizeof(struct stat) + sizeof(int), 0);
 	free(data_to_send);
+	free(data);
 }
 
 void net_read(int cfd, char * buf_data, int type, char * mountpoint){
@@ -212,6 +215,7 @@ void net_read(int cfd, char * buf_data, int type, char * mountpoint){
 	memcpy(buf, &bytes_read, sizeof(int));
     send(cfd, buf, sizeof(int) + bytes_read, 0);
     free(buf);
+    free(data);
 	
 }
 
@@ -219,6 +223,7 @@ void net_close(int cfd, char * buf, int type, char * mountpoint){
 	struct msg * data = deserialize_close(buf);
 	int res = close((int)data->fd);
 	send(cfd, &res, sizeof(int), 0);
+	free(data);
 }
 
 void net_rename(int cfd, char * buf, int type, char * mountpoint){
@@ -232,6 +237,7 @@ void net_rename(int cfd, char * buf, int type, char * mountpoint){
 	int ret = rename(old, new);
 
 	send(cfd, &ret, sizeof(int), 0);
+	free(data);
 }
 
 void net_unlink(int cfd, char * buf, int type, char * mountpoint){
@@ -241,6 +247,7 @@ void net_unlink(int cfd, char * buf, int type, char * mountpoint){
 	strcat(temp, data->path);
 	int ret = unlink(temp);
 	send(cfd, &ret, sizeof(int), 0);
+	free(data);
 }
 
 void net_rmdir(int cfd, char * buf, int type, char * mountpoint){
@@ -250,6 +257,7 @@ void net_rmdir(int cfd, char * buf, int type, char * mountpoint){
 	strcat(temp, data->path);
 	int ret = rmdir(temp);
 	send(cfd, &ret, sizeof(int), 0);	
+	free(data);
 }
 
 void net_mkdir(int cfd, char * buf, int type, char * mountpoint){
@@ -259,7 +267,8 @@ void net_mkdir(int cfd, char * buf, int type, char * mountpoint){
 	strcat(temp, data->path);
 
 	int ret = mkdir(temp, data->mode);
-	send(cfd, &ret, sizeof(int), 0);	
+	send(cfd, &ret, sizeof(int), 0);
+	free(data);	
 }
 
 void net_opendir(int cfd, char * buf, int type, char * mountpoint){
@@ -275,6 +284,7 @@ void net_opendir(int cfd, char * buf, int type, char * mountpoint){
 	}else{;
 		send(cfd, &dp_pointer, sizeof(intptr_t), 0);	
 	}
+	free(data);
 	
 }
 
@@ -282,6 +292,7 @@ void net_closedir(int cfd, char * buf, int type, char * mountpoint){
 	struct msg * data = deserialize_dir(buf);
 	int ret = closedir((DIR *)(uintptr_t)data->dir);
 	send(cfd, &ret, sizeof(int), 0);
+	free(data);
 }
 
 void net_create(int cfd, char * buf, int type, char * mountpoint){
@@ -294,6 +305,7 @@ void net_create(int cfd, char * buf, int type, char * mountpoint){
 	int fd = open(temp, data->flags);
 	
 	send(cfd, &fd, sizeof(int), 0);
+	free(data);
 }
 
 void net_truncate(int cfd, char * buf, int type, char * mountpoint){
@@ -312,7 +324,7 @@ void net_truncate(int cfd, char * buf, int type, char * mountpoint){
 	memcpy(resp + sizeof(int), &hash, sizeof(unsigned long));
 	send(cfd, resp, sizeof(int) + sizeof(unsigned long), 0);
 	
-
+	free(data);
 }
 
 void net_write(int cfd, char * buf, int type, char * mountpoint){
@@ -332,6 +344,7 @@ void net_write(int cfd, char * buf, int type, char * mountpoint){
 	memcpy(resp, &written, sizeof(int));
 	memcpy(resp + sizeof(int), &hash, sizeof(unsigned long));
 	send(cfd, resp, sizeof(int) + sizeof(unsigned long), 0);
+	free(data);
 }
 
 void net_readdir(int cfd, char * buf, int type, char * mountpoint){
@@ -358,8 +371,9 @@ void net_readdir(int cfd, char * buf, int type, char * mountpoint){
     } while ((de = readdir(dp)) != NULL);
     
     send(cfd, &ret, sizeof(int), 0);	
-
+    free(data);
 }
+
 void net_hostwap_storage(int cfd, char * buf, int type, char * mountpoint){
 	int length = *(int*)(buf + sizeof(int));
 	char path[length + 1];
@@ -368,6 +382,10 @@ void net_hostwap_storage(int cfd, char * buf, int type, char * mountpoint){
 	char temp[strlen(mountpoint) + strlen(path)];
 	strcpy(temp, mountpoint);
 	strcat(temp, path);
+	struct stat buffer;   
+	if (stat(temp, &buffer) == 0){
+		 unlink(temp);
+	}
 	if (file){
 		mknod(temp, 33204, S_IFREG);
 	}else{
@@ -379,16 +397,13 @@ void net_hotswap_file_content(int cfd, char * buf, int type, char * mountpoint){
 	int size = *(int *)(buf + sizeof(int));
 	char * path = malloc(size);
 	memcpy(path, (buf + sizeof(int) * 2), size);
+	path[size] = '\0';
 	int data_size = *(int*)(buf + sizeof(int) * 2 + size);
-	char * data = malloc(data_size);
-	memcpy(data, (buf + sizeof(int) * 3 + size), data_size);
-
 	char temp[strlen(mountpoint) + strlen(path)];
 	strcpy(temp, mountpoint);
 	strcat(temp, path);
-
 	int fd = open(temp, O_WRONLY);
-	write(fd, data, data_size);
+	write(fd, (buf + sizeof(int) * 3 + size), data_size);
 	close(fd);
 
 	unsigned long hash;
@@ -396,8 +411,7 @@ void net_hotswap_file_content(int cfd, char * buf, int type, char * mountpoint){
 	if (setxattr(temp, "user.hash", &hash, sizeof(unsigned long), 0) == -1){
 		perror(strerror(errno));
 	}
-
-
+	free(path);
 }
 //0 for dir
 //1 for file
@@ -428,7 +442,6 @@ static void send_file_content(int cfd, char * full_path, char * path){
     read(fd, buf, file_length);
     buf[file_length] = '\0';
     close(fd);
-
     int size = sizeof(int) * 3 + file_length + strlen(path);
     void * packet = malloc(size + sizeof(int) * 2);
     int packet_size = size + sizeof(int);
@@ -480,10 +493,22 @@ static void dump_tree(int fd, char * path){
 void net_dump(int fd, char * path){
 	dump_tree(fd, path);	
 	int length = 0;
-
 	send(fd, &length, sizeof(int), 0);
 }
 
+
+void net_restore_file(int cfd, char * buf, int type, char * mountpoint){
+	struct msg * data = deserialize_path(buf, type);
+	char temp[strlen(mountpoint) + strlen(data->path)];
+	strcpy(temp, mountpoint);
+	strcat(temp, data->path);
+	send_file_packet(cfd, data->path, 1);
+	send_file_content(cfd, temp, data->path);
+	int length = 0;
+	send(cfd, &length, sizeof(int), 0);
+	free(data);
+	
+}
 void * serve_client(void * data){
 	char * path = *(char **)data;
 	int cfd = *(int*)((char*)data + sizeof(char*));
@@ -512,7 +537,7 @@ void * serve_client(void * data){
     		break;
         }
         int type = *(int*)buf;
-        // printf("type %d\n", type);
+
 		functions[type](cfd, buf, type, path);
 	}
 	return NULL;

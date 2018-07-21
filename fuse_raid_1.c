@@ -18,7 +18,7 @@
 #include <string.h>
 #include <time.h>
 #include <dirent.h>
-
+#include <signal.h>
 
 #include "fuse_raid_1.h"
 #define SERVER_NUMB 3
@@ -203,15 +203,13 @@ static int check_connection(int fd){
 	int keep_alive_msg = 1;
 	send(fd, &keep_alive_msg, sizeof(int), 0);
 	int received;
-	if ((received = recv(fd, &keep_alive_msg, sizeof(int), 0)) == 0){
+	if ((received = recv(fd, &keep_alive_msg, sizeof(int), 0)) == 0 || received == -1){
 		return 0;
 	}
 	return 1;
 }
 
 static void rewrite(int from, int to){
-	int dump_msg = -1;
-	send(from, &dump_msg, sizeof(int), 0);
 	int length;
 	recv(from, &length, sizeof(int), 0);
 	while (length > 0){
@@ -219,7 +217,29 @@ static void rewrite(int from, int to){
 		recv(from, buf, length, 0);
 		send(to, buf, length, 0);
 		recv(from, &length, sizeof(int), 0);
+		free(buf);
 	} 
+}
+
+
+static void restore_file(int from, int to, char * path){
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata data = *(struct auxdata *)context->private_data;
+	int fd_from = data.fds[from];
+	int fd_to = data.fds[to];
+
+	char * data_to_send = NULL;
+	struct msg msg = {
+		.type = 16,
+		.path = path
+	};
+
+	int size = get_path_data(&msg, &data_to_send);
+	send(fd_from, data_to_send, size, 0);
+	time_t current_time = time(NULL);
+    printf("[%s] %s %s:%d restore file %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[from].ip, data.ip_ports[from].port, path);
+    rewrite(fd_from, fd_to);
 }
 
 static int rewrite_to_hotswap(int fd_index){
@@ -235,12 +255,11 @@ static int rewrite_to_hotswap(int fd_index){
 		time_t current_time = time(NULL);
 		printf("[%s] %s %s:%d hotswap is not connected\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
-		char error_msg[] = "";
-		strcat(error_msg, "hotswap wasn't connected, while trying to rewrite data to hotswap server\n");
-		write(data.errorlog, error_msg, strlen(error_msg));
 		return 1;
 	}
 	printf("%s\n", "Rewriting...............");
+	int dump_msg = -1;
+	send(data.fds[1-fd_index], &dump_msg, sizeof(int), 0);
 	rewrite(data.fds[1-fd_index], data.fds[fd_index]);
 	printf("%s\n", "Rewriting Done");
 	return 0;
@@ -284,7 +303,7 @@ static int fill_buf(int fd, int fd_index, struct auxdata data, struct buf * rece
 }
 
 static int receive_data_from_storage(int fd_index, char * data_to_send, int size, char * log_msg,
-	 struct msg * msg, struct buf * received_buf){
+	struct msg * msg, struct buf * received_buf){
 
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata data = *(struct auxdata *)context->private_data;
@@ -298,7 +317,6 @@ static int receive_data_from_storage(int fd_index, char * data_to_send, int size
     	printf(" to %s", msg->new_name);
     }
     printf("\n");
-  
     int status_code = -1;
     int received = recv(fd, &status_code, sizeof(int), 0);
     if (received == 0){
@@ -324,8 +342,12 @@ static int receive_data_from_storage(int fd_index, char * data_to_send, int size
     }	
 
     if (msg->type == 1 && status_code == -2){
-    	printf("[%s] %s %s:%d file damaged, wrong hash for path %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    	printf("[%s] %s %s:%d wrong hash, restoring file %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port, msg->path);
+    	restore_file(fd_index ^ 1, fd_index, msg->path);
+    	return receive_data_from_storage(fd_index, data_to_send, size, log_msg, msg, 
+    				received_buf);
+
     }
 
     if (msg->type == 2){
@@ -340,7 +362,7 @@ static int receive_data_from_storage(int fd_index, char * data_to_send, int size
     	if (fill_buf(fd, fd_index, data, received_buf, &status_code, 2)){
     		return receive_data_from_storage(fd_index, data_to_send, size, log_msg, msg, 
     				received_buf);
-    	}
+    	} 
     	if (msg->type == 8)
 			printf("[%s] %s %s:%d %d bytes wrote at %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
 				data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port, status_code, msg->path);
@@ -350,7 +372,7 @@ static int receive_data_from_storage(int fd_index, char * data_to_send, int size
 }
 
 
-static void send_keep_alive(int fd_index){
+static int send_keep_alive(int fd_index){
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata data = *(struct auxdata *)context->private_data;
 	int fd = data.fds[fd_index];
@@ -363,12 +385,16 @@ static void send_keep_alive(int fd_index){
     			data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
 		if (get_timeout(fd, fd_index, data) == -1){
     		swap_servers(fd_index);
-    		rewrite_to_hotswap(fd_index);
+    		if (rewrite_to_hotswap(fd_index))
+    			return -1;
     	}
 
 	}
 
+	return 0;
+
 }
+
 static int receive_readdir_from_storage(int fd_index, char * data_to_send, int size, char * log_msg, 
 	char* path, void ** buf, fuse_fill_dir_t filler){
 	struct fuse_context *context = fuse_get_context();
@@ -395,6 +421,7 @@ static int receive_readdir_from_storage(int fd_index, char * data_to_send, int s
 
     	}
 		
+
 	}
 	while(name_length != 0){
 		char * name = malloc(name_length + 1);
@@ -429,7 +456,16 @@ static int net_getattr(const char* path, struct stat* stbuf){
 		.stbuf = stbuf
 	};
 	int status_code = receive_data_from_storage(0, data_to_send, size, "getattr on path", &msg, &cur);
-	send_keep_alive(1);
+
+	struct stat * stat_buf_check = malloc(sizeof (struct stat));
+	struct buf cur_backup = {
+		.stbuf = stat_buf_check
+	};
+	int backup_status = receive_data_from_storage(1, data_to_send, size, "getattr on path", &msg, &cur_backup);
+	if (status_code != backup_status)
+		status_code == -2 ? restore_file(1, 0, (char*)path) : restore_file(0, 1, (char*)path);
+
+	free(stat_buf_check);
 	free(data_to_send);
 	return status_code;
 }
@@ -738,8 +774,8 @@ static int net_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	};
 	int size = get_path_data(&msg, &data_to_send);
 	receive_readdir_from_storage(0, data_to_send, size, "readdir", (char*)path, &buf, filler);
+	free(data_to_send);
 	send_keep_alive(1);
-
 	return 0;
 }
 
