@@ -13,7 +13,7 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include <sys/stat.h>
-#include "fuse_raid_1.h"
+#include "fuse_raid.h"
 
 #define BYTES 1048576
 
@@ -124,9 +124,9 @@ static int ip_port_parser(char * servers, addresses ** ip_ports){
   	int port = atoi(strtok(NULL, ":"));
   	(*ip_ports)->port = port;
   	int n = 1;
-  	for (token = strtok_r(NULL, "\n", &saveptr); token != NULL; token = strtok_r(NULL, "\n", &saveptr)){
+  	for (token = strtok_r(NULL, ",", &saveptr); token != NULL; token = strtok_r(NULL, ",", &saveptr)){
   		*ip_ports = realloc(*ip_ports, (n + 1) * sizeof(struct addresses));
-  		char * ip = strtok(token, ":")+1;
+  		char * ip = strtok(token, ":") + 1;
 	  	(*ip_ports)[n].ip = malloc(strlen(ip) + 1);
 	  	strcpy((*ip_ports)[n].ip, ip);
 	  	int port = atoi(strtok(NULL, ":"));
@@ -136,43 +136,48 @@ static int ip_port_parser(char * servers, addresses ** ip_ports){
 
   	return n;
 }
-
-void raid_1(mount_info * info, client * client){
-	addresses * ip_ports = NULL;
-	addresses * swap_ip_port = NULL;
+static int * connet_to_servers(int numb_connections, int swap_connections,
+        addresses * ip_ports, addresses * swap_ip_port, char * diskname){
+    int * sfd = malloc(sizeof(int) * (numb_connections + swap_connections));
+    struct sockaddr_in addr[numb_connections + swap_connections];
     time_t current_time;
-	int numb_connections = ip_port_parser(info->servers, &ip_ports);
-	int swap_connections = ip_port_parser(info->hotswap, &swap_ip_port);
-	int sfd[numb_connections+swap_connections];
-	struct sockaddr_in addr[numb_connections + swap_connections];
 
-	int i;
+    int i;
     int con;
-	for (i = 0; i < numb_connections; ++i){
-		sfd[i] = socket(AF_INET, SOCK_STREAM, 0);
+    for (i = 0; i < numb_connections; ++i){
+        sfd[i] = socket(AF_INET, SOCK_STREAM, 0);
 
-    	addr[i].sin_family = AF_INET;
-	    addr[i].sin_port = htons(ip_ports[i].port);
-	    inet_aton(ip_ports[i].ip, (struct in_addr *)&addr[i].sin_addr.s_addr);
-	    con = connect(sfd[i], (struct sockaddr *) &addr[i], sizeof(struct sockaddr_in));
+        addr[i].sin_family = AF_INET;
+        addr[i].sin_port = htons(ip_ports[i].port);
+        inet_aton(ip_ports[i].ip, (struct in_addr *)&addr[i].sin_addr.s_addr);
+        con = connect(sfd[i], (struct sockaddr *) &addr[i], sizeof(struct sockaddr_in));
       if (con == 0){
         current_time = time(NULL);
-        printf("[%s] %s %s:%d %s\n", strtok(ctime(&current_time), "\n"), info->diskname, ip_ports[i].ip,
+        printf("[%s] %s %s:%d %s\n", strtok(ctime(&current_time), "\n"), diskname, ip_ports[i].ip,
             ip_ports[i].port, "open connection");
       }
-	}
+    }
     
-	//hot swap connection
-	sfd[i] = socket(AF_INET, SOCK_STREAM, 0);
-	addr[i].sin_family = AF_INET;
+    //hot swap connection
+    sfd[i] = socket(AF_INET, SOCK_STREAM, 0);
+    addr[i].sin_family = AF_INET;
     addr[i].sin_port = htons(swap_ip_port->port);
     inet_aton(swap_ip_port->ip, (struct in_addr *)&addr[i].sin_addr.s_addr);
     con = connect(sfd[i], (struct sockaddr *) &addr[i], sizeof(struct sockaddr_in));
     if (con == 0){
         current_time = time(NULL);
-        printf("[%s] %s %s:%d %s\n", strtok(ctime(&current_time), "\n"), info->diskname, swap_ip_port->ip,
+        printf("[%s] %s %s:%d %s\n", strtok(ctime(&current_time), "\n"), diskname, swap_ip_port->ip,
                 swap_ip_port->port, "hotswap connected");
     }
+    return sfd;
+}
+struct auxdata * setup_data(mount_info * info, client * client){
+	addresses * ip_ports = NULL;
+	addresses * swap_ip_port = NULL;
+	int numb_connections = ip_port_parser(info->servers, &ip_ports);
+	int swap_connections = ip_port_parser(info->hotswap, &swap_ip_port);
+
+    int * sfd = connet_to_servers(numb_connections, swap_connections, ip_ports, swap_ip_port, info->diskname);
 
     int fd = open(client->errorlog, O_RDWR);
     if (fd == -1){
@@ -181,18 +186,14 @@ void raid_1(mount_info * info, client * client){
     
     struct auxdata * data = malloc(sizeof(struct auxdata));
     data->fds = sfd;
+    data->fd_numb = numb_connections;
     data->errorlog = fd;
     data->timeout = client->timeout;
     data->diskname = info->diskname;
     data->ip_ports = ip_ports;
     data->swap_ip_port = swap_ip_port;
 
-    init_filesys(info->mountpoint, data);
-
-}
-
-void raid_5(mount_info * info, client * client){
-	printf("%s\n", "raid_5");
+    return data;
 }
 
 
@@ -215,10 +216,13 @@ int main(int argc, char const *argv[])
             case -1:
                 exit(100);
             case 0:
-            	if (mount_infos[i].raid == 1)
-                	raid_1(&mount_infos[i], net_client);
-                else
-                	raid_5(&mount_infos[i], net_client);
+            	if (mount_infos[i].raid == 1){
+                	// struct auxdata * data = setup_data(&mount_infos[i], net_client);
+                 //    init_raid_1(mount_infos[i].mountpoint, data);
+                }else{
+                    struct auxdata * data = setup_data(&mount_infos[i], net_client);
+                    init_raid_5(mount_infos[i].mountpoint, data);
+                }
                 exit(0);
             default:
             	continue;          
@@ -228,5 +232,5 @@ int main(int argc, char const *argv[])
     printf("%s\n", "Parent process exited");
   	free(net_client);
   	free(mount_infos);
-	 return 0;
+	return 0;
 }

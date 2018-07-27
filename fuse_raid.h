@@ -1,5 +1,5 @@
-#ifndef FUSE_RAID_1_H
-#define FUSE_RAID_1_H
+#ifndef FUSE_RAID_H
+#define FUSE_RAID_H
 
 typedef struct addresses{
 	char * ip;
@@ -8,6 +8,7 @@ typedef struct addresses{
 
 struct auxdata{
 	int * fds;
+	int fd_numb;
 	int timeout;
 	char * diskname;
 	int errorlog;
@@ -15,5 +16,6 @@ struct auxdata{
 	addresses * swap_ip_port;
 };
 
-void init_filesys(char *, struct auxdata *);
+void init_raid_1(char *, struct auxdata *);
+void init_raid_5(char *, struct auxdata *);
 #endif /* FUSE_RAID_1_H */

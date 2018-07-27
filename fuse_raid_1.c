@@ -2,157 +2,16 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <fcntl.h>	
-#include <unistd.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/wait.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/ip.h> /* superset of previous */
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <fuse.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <string.h>
-#include <time.h>
-#include <dirent.h>
-#include <signal.h>
 
-#include "fuse_raid_1.h"
+#include "utils.h"
+#include "fuse_raid.h"
 #define SERVER_NUMB 3
-struct msg{
-	int type;
-	char * path;
-	int size;
-	int offset;
-	mode_t  mode;
-	int flags;
-	int fh;
-	uintptr_t dir;
-	char * new_name;
-	char * buf;
-};
-
-struct buf{
-	struct stat * stbuf;
-	char * read_buf;	
-	unsigned long hash;
-};
-
-static void put_path(struct msg * data, char ** res, int size){
-	memcpy(*res, &size, sizeof(int));
-	memcpy(*res + sizeof(int), &data->type, sizeof(int));
-	size_t length = strlen(data->path);
-	memcpy(*res + sizeof(int)*2, &length, sizeof(size_t));
-	memcpy(*res + sizeof(int)*2 + sizeof(size_t), data->path, strlen(data->path) + 1);
-}
-
-int get_path_data(struct msg * data, char ** res){
-	int size = sizeof(int) * 2 + sizeof(size_t) + strlen(data->path) + 1;
-	*res = malloc(size);
-	put_path(data, res, size - sizeof(int));
-
-	return size;
-
-}
-
-int get_open_data(struct msg * data, char ** res){
-	int size = sizeof(int)*2 + sizeof(size_t) + strlen(data->path) + 1 + sizeof(int);
-	*res = malloc(size);
-	put_path(data, res, size - sizeof(int));
-	int pointer = sizeof(int) * 2 + sizeof(size_t) + strlen(data->path) + 1;
-	memcpy(*res + pointer, &data->flags, sizeof(int) );
-	return size;
-}
-
-static void put_fd(struct msg * data, char ** res, int size){
-	memcpy(*res, &size, sizeof(int));
-	memcpy(*res + sizeof(int), &data->type, sizeof(int));
-	memcpy(*res + sizeof(int)*2, &data->fh, sizeof(int));
-	memcpy(*res + sizeof(int)*3, &data->size, sizeof(int));
-	memcpy(*res + sizeof(int)*4, &data->offset, sizeof(int));
-}
-
-int get_read_data(struct msg * data, char ** res){
-	int size = sizeof(int) * 5;
-	*res = malloc(size);
-	put_fd(data, res, size - sizeof(int));
-	return size;
-}
-
-int get_write_data(struct msg * data, char ** res){
-	int size = sizeof(int) * 6 + data->size + 1 + strlen(data->path);
-	*res = malloc(size);
-	put_fd(data, res, size - sizeof(int));
-	int length = strlen(data->path);
-	memcpy(*res + sizeof(int) * 5, &length, sizeof(int));
-	memcpy(*res + sizeof(int) * 6, data->path, strlen(data->path) + 1);
-	memcpy(*res + sizeof(int) * 6 + strlen(data->path) + 1, data->buf, data->size);
-	return size;
-}
-
-int get_fd_data(struct msg * data, char ** res){
-	int size = sizeof(int) * 2;
-	*res = malloc(size + sizeof(int));
-	memcpy(*res, &size, sizeof(int));
-	memcpy(*res + sizeof(int), &data->type, sizeof(int));
-	memcpy(*res + sizeof(int)*2, &data->fh, sizeof(int));
-	return size + sizeof(int);
-}
-
-int get_dir_data(struct msg * data, char ** res){
-	int size = sizeof(int) + sizeof(uintptr_t);
-	*res = malloc(size + sizeof(int));
-	memcpy(*res, &size, sizeof(int));
-	memcpy(*res + sizeof(int), &data->type, sizeof(int));
-	memcpy(*res + sizeof(int) * 2, &data->dir, sizeof(uintptr_t));
-	return size + sizeof(int);	
-}
-
-int get_rename_data(struct msg* data, char ** data_to_send){
-	int size = sizeof(int) * 2 + 2 * sizeof(size_t) + strlen(data->path) + 1 + strlen(data->new_name) + 1;
-	*data_to_send = malloc(size);
-	put_path(data, data_to_send, size - sizeof(int));
-
-	int pointer = sizeof(int) * 2 + sizeof(size_t) + strlen(data->path) + 1;
-	size_t length = strlen(data->new_name);
-	memcpy(*data_to_send + pointer, &length, sizeof(size_t));
-	pointer += sizeof(size_t);
-	memcpy(*data_to_send + pointer, data->new_name, strlen(data->new_name) + 1);
-	return size;
-}
-
-int get_mode_data(struct msg *data, char ** res){
-	int size = sizeof(int) * 2 + sizeof(size_t) + strlen(data->path) + 1 + sizeof(mode_t);
-	*res = malloc(size);
-	put_path(data, res, size - sizeof(int));	
-	int pointer = sizeof(int)*2 + sizeof(size_t) + strlen(data->path) + 1;
-	memcpy(*res + pointer, &data->mode, sizeof(mode_t));
-	return size;
-}
-
-int get_create_data(struct msg * data, char ** res){
-	int size = sizeof(int) * 2 + sizeof(size_t) + strlen(data->path) + 1 + 
-		sizeof(int) + sizeof(mode_t);
-	*res = malloc(size);
-	put_path(data, res, size - sizeof(int));
-	int pointer = sizeof(int) * 2 + sizeof(size_t) + strlen(data->path) + 1;
-	memcpy(*res + pointer, &data->flags, sizeof(int));
-	pointer += sizeof(int);
-	memcpy(*res + pointer, &data->mode, sizeof(mode_t));
-	return size;
-}
-
-int get_truncate_data(struct msg * data, char ** res){
-	int size = sizeof(int) * 2 + sizeof(size_t) + strlen(data->path) + 1 + sizeof(int);
-	*res = malloc(size);
-	put_path(data, res, size - sizeof(int));
-	int pointer = sizeof(int)*2+ sizeof(size_t) + strlen(data->path) + 1;
-	memcpy(*res + pointer, &data->size, sizeof(int));
-	return size;
-}
 
 int get_timeout(int fd, int fd_index, struct auxdata data){
 	int ret;
@@ -390,7 +249,6 @@ static int send_keep_alive(int fd_index){
     	}
 
 	}
-
 	return 0;
 
 }
@@ -627,76 +485,69 @@ static int net_write(const char* path, const char *buf, size_t size, off_t offse
 	struct buf server_2 = {
 		.hash = 0
 	};
-	int bytes_written_1 = receive_data_from_storage(0, data_to_send, buf_size, "write", &msg, &server_1);
+	int bytes_written = receive_data_from_storage(0, data_to_send, buf_size, "write", &msg, &server_1);
 
 	msg.fh = *(int*)((char*)(&fi->fh) + sizeof(int));
 	buf_size = get_write_data(&msg, &data_to_send);
-	int bytes_written_2 = receive_data_from_storage(1, data_to_send, buf_size, "write", &msg, &server_2);
+	receive_data_from_storage(1, data_to_send, buf_size, "write", &msg, &server_2);
 	if (server_1.hash != server_2.hash){
 		printf("%s %s \n", "Error while writing file ", path);
 	}
-	if (bytes_written_1 != bytes_written_2){
-		struct fuse_context *context = fuse_get_context();
-		struct auxdata aux = *(struct auxdata *)context->private_data;
-		char error_msg[] = "Different bytes written";
-		write(aux.errorlog, error_msg, strlen(error_msg));
-	}
-
 	free(data_to_send);
-	return bytes_written_1;
+	return bytes_written;
 }
 
 static int net_opendir(const char* path, struct fuse_file_info* fi){
-	// printf("%s\n", "opendir");
-	// if (fi->fh != 0 || strcmp(path, "/") == 0){
-	// 	return 0;
-	// }
-	// char * data_to_send = NULL;
-	// struct msg msg = {
-	// 	.type = 9,
-	// 	.path = (char*)path
-	// };
+	if (fi->fh != 0 || strcmp(path, "/") == 0){
+		return 0;
+	}
+	char * data_to_send = NULL;
+	struct msg msg = {
+		.type = 9,
+		.path = (char*)path
+	};
 
-	// int size = get_path_data(&msg, &data_to_send);
-	// struct fuse_context *context = fuse_get_context();
-	// struct auxdata data = *(struct auxdata *)context->private_data;
-	// int fd = data.fds[0];
+	int size = get_path_data(&msg, &data_to_send);
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata data = *(struct auxdata *)context->private_data;
+	int fd = data.fds[0];
 
-	// send(fd, data_to_send, size, 0);
- //    recv(fd, &fi->fh, sizeof(intptr_t), 0);
- //    if (fi->fh == 0){
-	// 	return -ENOENT;
-	// }
-	// time_t current_time = time(NULL);
-	// printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
- //        data.ip_ports[0].port, "open dir  ", path);
+	send(fd, data_to_send, size, 0);
+    recv(fd, &fi->fh, sizeof(intptr_t), 0);
+    if (fi->fh == 0){
+		return -ENOENT;
+	}
+	time_t current_time = time(NULL);
+	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
+        data.ip_ports[0].port, "open dir  ", path);
 
- //    free(data_to_send);
+    free(data_to_send);
     return 0;
 }
 
 static int net_releasedir(const char* path, struct fuse_file_info *fi){
-	// char * data_to_send = NULL;
-	// struct msg msg = {
-	// 	.type = 10,
-	// 	.dir = fi->fh
-	// };
-	// int size = get_dir_data(&msg, &data_to_send);
-	// struct fuse_context *context = fuse_get_context();
-	// struct auxdata data = *(struct auxdata *)context->private_data;
-	// int fd = data.fds[0];
+	if (strcmp(path, "/") == 0) return 0;
+	char * data_to_send = NULL;
+	struct msg msg = {
+		.type = 10,
+		.dir = fi->fh
+	};
+	int size = get_dir_data(&msg, &data_to_send);
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata data = *(struct auxdata *)context->private_data;
+	int fd = data.fds[0];
 
-	// send(fd, data_to_send, size, 0);
-	// int res;
- //    recv(fd, &res, sizeof(int), 0);
- //    if (res == 0){
- //    	fi->fh = 0;
-	// 	time_t current_time = time(NULL);
- //    	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
- //            data.ip_ports[0].port, "release dir  ", path);
- //    }
+	send(fd, data_to_send, size, 0);
+	int res;
+    recv(fd, &res, sizeof(int), 0);
+    if (res == 0){
+    	fi->fh = 0;
+		time_t current_time = time(NULL);
+    	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
+            data.ip_ports[0].port, "release dir  ", path);
+    }
 
- //    free(data_to_send);
+    free(data_to_send);
 
 	return 0;
 
@@ -757,6 +608,7 @@ static void net_destroy(void * private_data){
 	free(data->ip_ports);
   	free(data->swap_ip_port->ip);
   	free(data->swap_ip_port);
+  	free(data->fds);
 	free(data);
 }
 
@@ -800,7 +652,7 @@ static struct fuse_operations net_oper = {
 
 
 
-void init_filesys(char * mountpoint, struct auxdata * data){
+void init_raid_1(char * mountpoint, struct auxdata * data){
 	int argc = 3;
 	char *argv[3];
 	argv[0] = data->diskname;
