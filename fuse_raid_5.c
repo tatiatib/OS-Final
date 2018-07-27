@@ -37,6 +37,31 @@ static int connect_server(int fd_index, struct auxdata data, char * data_to_send
     return status_code;
 }
 
+static int get_chunk(int fd, const char * path, int n_block, char ** buf){
+
+	char * data_to_send = NULL;
+	struct msg msg = {
+		.type = 17,
+		.path = (char*)path,
+		.size = n_block
+	};
+
+	int data_size = get_chunk_data(&msg, &data_to_send);
+	send(fd, data_to_send, data_size, 0);
+	free(data_to_send);
+
+	int size;
+	int received = recv(fd, &size, sizeof(int), 0);
+	printf("%d\n", size);
+	if (size != 0){
+		received = recv(fd, *buf, size, 0);
+	}
+	// if(size == 0)
+	memset(*buf + size, 0, BLOCK - size);
+	printf("get chunk %s\n", *buf);
+	return size;
+}
+
 static int raid_getattr(const char* path, struct stat* stbuf){
 	char * data_to_send = NULL;
 	struct msg msg = {
@@ -50,14 +75,37 @@ static int raid_getattr(const char* path, struct stat* stbuf){
 	struct buf cur = {
 		.stbuf = stbuf
 	};
+	int file_lenght = 0;
 	int status = connect_server(0, data, data_to_send, size, "getattr on path", &msg, &cur);
-	
-	free(data_to_send);
+
 	if (status != 0){
-		printf("%s\n", "ENOENT");
+		free(data_to_send);
 		return -ENOENT;
 	}
+	file_lenght += stbuf->st_size;
 	
+	if (S_ISDIR(stbuf->st_mode)){
+		free(data_to_send);
+		return status;
+	}
+	int i;
+	struct stat * stat_buf_servers = malloc(sizeof (struct stat));
+	struct buf cur_backup = {
+		.stbuf = stat_buf_servers
+	};
+	for (i = 1; i < data.fd_numb;  i++){
+		status = connect_server(i, data, data_to_send, size, "getattr on path", &msg, &cur_backup);
+		file_lenght += stat_buf_servers->st_size;
+
+	}
+
+	int stripe = BLOCK * data.fd_numb;
+	file_lenght = file_lenght % stripe == 0 ? file_lenght - (file_lenght/stripe) * BLOCK : 
+		file_lenght - (file_lenght/stripe + 1) * BLOCK ;
+
+	stbuf->st_size = file_lenght;
+	free(data_to_send);
+	printf("%d\n", file_lenght);
 	return status;
 }
 
@@ -68,11 +116,31 @@ static int raid_open(const char* path, struct fuse_file_info* fi){
 
 static int raid_read(const char* path, char *buf, size_t size, off_t offset, 
 	struct fuse_file_info* fi){
-	
+	// printf("%d\n", offset);
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata data = *(struct auxdata *)context->private_data;
+	int cur_server = (offset / BLOCK) % data.fd_numb;
+	int stripe = BLOCK * (data.fd_numb - 1);
+	int n_block = offset / stripe;	
+	int pointer = 0;
 
+	int received_size;
 
+	do{
+		printf("pointer %d n_block %d cur_server %d\n", pointer, n_block, cur_server);
+		char * buf_pointer = buf + pointer;
+		received_size = get_chunk(data.fds[cur_server], path, n_block, &buf_pointer);
+		printf("received_size %d\n", received_size);
+		size -= received_size;
+		pointer += received_size;
+		n_block = (offset + pointer) / stripe;
+		cur_server = ((offset + pointer) / BLOCK) % data.fd_numb;
+	}while(received_size == BLOCK && size > 0);
 
-	return 0;
+	printf("final buf %s\n",buf);
+	printf("strleen %d\n", strlen(buf));
+	printf("pointer %d\n", pointer);
+	return pointer;
 }
 static int raid_release(const char* path, struct fuse_file_info *fi){
 	return 0;
@@ -158,27 +226,7 @@ static int raid_mkdir(const char* path, mode_t mode){
 	return 0;
 }
 
-static void get_chunk(int fd, const char * path, int n_block, char ** buf){
-	char * data_to_send = NULL;
-	struct msg msg = {
-		.type = 17,
-		.path = (char*)path,
-		.size = n_block
-	};
 
-	int data_size = get_chunk_data(&msg, &data_to_send);
-	send(fd, data_to_send, data_size, 0);
-	free(data_to_send);
-
-	int size;
-	int received = recv(fd, &size, sizeof(int), 0);
-	printf("%d\n", size);
-	if (size != 0){
-		received = recv(fd, *buf, size, 0);
-	}
-	memset(*buf + size, 0, BLOCK - size);
-	printf("get chunk %s\n", *buf);
-}
 
 static void send_chunk(int fd, const char * path, const char * buf, int offset, int size, int n_block){
 	char * data_to_send = NULL;
@@ -249,6 +297,8 @@ static int raid_write(const char* path, const char *buf, size_t size, off_t offs
 	struct fuse_file_info* fi){
 	printf("size %d\n", size);
 	printf("offset %d\n", offset);
+	printf("%s\n", buf);
+	printf("%s\n","============================");
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata data = *(struct auxdata *)context->private_data;
 
@@ -259,41 +309,50 @@ static int raid_write(const char* path, const char *buf, size_t size, off_t offs
 	int i = 0;
 	printf("%d\n", start_server);
 	int cur_size = size;
-	int server_numb = size % BLOCK == 0 ? size / BLOCK : size / BLOCK + 1;
-	int chunk = size > BLOCK ? BLOCK - (offset % BLOCK): size;
+	int server_numb = size % BLOCK == 0 || size < BLOCK ? size / BLOCK : (size / BLOCK) + 1;
+	int chunk = BLOCK - (offset % BLOCK);
+	if ((offset == 0 && size < BLOCK) || chunk > size) chunk = size;
+
+	if (size < BLOCK && offset != 0){
+		server_numb += 1;
+	}
+
 	int pointer = 0;
 	printf("server_numb %d  chunk %d \n", server_numb, chunk);
 
 	int stripe = BLOCK * (data.fd_numb - 1);
 	int cur_server = (start_server - 1) % data.fd_numb;
+	cur_server = cur_server < 0 ? data.fd_numb - 1 : cur_server;
 	int cur_rem = offset / stripe;
 	int cur_offset = offset - BLOCK;
 
 	int n_block;
 	//get previous blocks;
 	while (cur_offset > 0){
+	
 		if (cur_offset / stripe == cur_rem){
 			char * xor_pointer = xor_data + j * BLOCK;
 			get_chunk(data.fds[cur_server], path, cur_rem, &xor_pointer);
+		
 		}else break;
-
+		
 		cur_offset -= BLOCK;
 		j += 1;
 		cur_server = (cur_server - 1) % server_numb;
 	}
-	
+
 	//current blocks
 
-	for (i = start_server; i < server_numb; i++){
-		int fd  = i % data.fd_numb;
-		n_block = offset + pointer / stripe;
+	for (i = start_server; i < start_server + server_numb; i++){
+		int fd = i % data.fd_numb;
+		n_block = (offset + pointer) / stripe;
 		if (j == data.fd_numb - 1){
 			printf("send xor block_n %d\n",n_block - 1);
 			send_xor(data.fds[fd], path, xor_data, data.fd_numb - 1, n_block - 1);
 			j = 0;
 		}
 		printf("fd %d pointer %d\n", fd, pointer);
-		printf("n_block %d\n", n_block);
+		printf("n_block %d chunk %d\n", n_block, chunk);
 		if (pointer == 0)
 			send_chunk(data.fds[fd], path, buf + pointer, offset % BLOCK, chunk, n_block);
 		else send_chunk(data.fds[fd], path,  buf + pointer, 0, chunk,  n_block);
@@ -308,7 +367,7 @@ static int raid_write(const char* path, const char *buf, size_t size, off_t offs
 			get_chunk(data.fds[fd], path, n_block, &xor_pointer);
 			printf("get chunk , block_n %d\n", n_block);
 		}
-
+		printf("i %d\n", i);
 		j += 1;
 		pointer += chunk;
 		cur_size -= chunk;
@@ -320,21 +379,24 @@ static int raid_write(const char* path, const char *buf, size_t size, off_t offs
 	}	
 	//TODO 
 	//next blocks
+	printf("%s\n", "-----------------------");
 	int written = offset + size;
 	printf("written %d\n",written );
 	n_block = written / stripe;
 	cur_server = i % data.fd_numb;
 	printf("cur_server %d\n", cur_server);
 	if (j == data.fd_numb - 1){
+		printf("%s\n", "its jere");
 		send_xor(data.fds[cur_server], path, xor_data, data.fd_numb - 1, n_block);
 		free(xor_data);
 		return size;
 	}
 
-	while ((written + BLOCK) / stripe == n_block){
+	while ((int)((written + BLOCK) / stripe) == n_block || (written + BLOCK) % stripe == 0){
+
 		char * xor_pointer = xor_data + j * BLOCK;
 		get_chunk(data.fds[cur_server], path, n_block, &xor_pointer);
-		printf("get chunk , block_n %d\n", cur_rem);
+		printf("get chunk , block_n %d\n", n_block);
 		j += 1;
 		cur_server = (i+1) % data.fd_numb;
 		if (j == data.fd_numb - 1){

@@ -74,6 +74,7 @@ void net_open(int cfd, char * buf, int type, char * mountpoint){
 }
 
 void net_get_attr(int cfd, char * buf_data, int type, char * mountpoint){
+	// printf("%s\n", "hello");
 	struct msg * data = deserialize_path(buf_data, type);
 	char temp[strlen(mountpoint) + strlen(data->path)];
 	strcpy(temp, mountpoint);
@@ -396,12 +397,14 @@ void send_chunk(int cfd, char * buf, int size){
 	if (buf != NULL){
 		memcpy(packet + sizeof(int), buf, size);
 	}
-	printf("sending chunk %d %s \n", size, buf);
+	// printf("sending chunk %d %s \n", size, buf);
 	send(cfd, packet, size + sizeof(int), 0);
 	free(packet);
 
 }
+
 void net_send_chunk(int cfd, char * buf, int type, char * mountpoint){
+	// printf("%s\n", "received request");
 	struct msg * data = deserialize_path(buf, type);
 	char temp[strlen(mountpoint) + strlen(data->path)];
 	strcpy(temp, mountpoint);
@@ -414,7 +417,7 @@ void net_send_chunk(int cfd, char * buf, int type, char * mountpoint){
     int fd = open(temp, O_RDONLY);
     int start = n_block * BLOCK;
     int end = (n_block + 1) * BLOCK;
-    
+
     if (start < file_size && end <= file_size){
     	char * buf = malloc(BLOCK);
     	pread(fd, buf, BLOCK, start);
@@ -446,11 +449,11 @@ void net_get_chunk(int cfd, char * buf, int type, char * mountpoint){
 	int cur_offset = data->fd * BLOCK + data->offset;
 	int bytes_written = pwrite(fd, data->buf, data->size, cur_offset);
 	send(cfd, &bytes_written, sizeof(size_t), 0);
-	printf("%s\n", temp);
-	printf("buf %s\n", data->buf);
-	printf("n _block %d\n", data->fd);
-	printf("size %d\n", data->size);
-	printf("offset %d\n", data->offset);
+	// printf("%s\n", temp);
+	// printf("buf %s\n", data->buf);
+	// printf("n _block %d\n", data->fd);
+	// printf("size %d\n", data->size);
+	// printf("offset %d\n", data->offset);
 }
 
 void * serve_client(void * data){
@@ -481,7 +484,6 @@ void * serve_client(void * data){
     		break;
         }
         int type = *(int*)buf;
-
 		functions[type](cfd, buf, type, path);
 	}
 	return NULL;
