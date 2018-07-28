@@ -94,10 +94,11 @@ unsigned long hash_djb(unsigned char *str){
 		close(fd);
 		return;
 	}
-	unsigned char * buffer = malloc(size);
+	unsigned char buffer[size];
+	// unsigned char * buffer = malloc(size);
 	read(fd, buffer, size);
 	buffer[size] = '\0';
 	*hash = hash_djb(buffer);
 	close(fd);
-	free(buffer);
+	
 }

@@ -288,6 +288,7 @@ void net_hotswap_file_content(int cfd, char * buf, int type, char * mountpoint){
 	char temp[strlen(mountpoint) + strlen(path)];
 	strcpy(temp, mountpoint);
 	strcat(temp, path);
+	
 	int fd = open(temp, O_WRONLY);
 	write(fd, (buf + sizeof(int) * 3 + size), data_size);
 	close(fd);
@@ -323,6 +324,7 @@ static void send_file_content(int cfd, char * full_path, char * path){
     if (file_length == 0)
     	return;
     char * buf = malloc(file_length);
+   
     int fd = open(full_path, O_RDONLY);
     read(fd, buf, file_length);
     buf[file_length] = '\0';
@@ -356,11 +358,13 @@ static void dump_tree(int fd, char * path, char * relative_path){
 			if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0){
 				continue;
 			}
+		
+			char temp[strlen(path) + strlen(dir->d_name) + 2];
 
-			char temp[strlen(path) + strlen(dir->d_name) + 1];
 			strcpy(temp, path);
 			strcat(temp, "/");
 			strcat(temp, dir->d_name);
+			temp[strlen(path) + strlen(dir->d_name) + 1] = '\0';
 			stat(temp, &path_stat);
 			if (S_ISDIR(path_stat.st_mode)){
 				char ret[strlen(relative_path) + strlen(dir->d_name) + 1];
@@ -369,11 +373,11 @@ static void dump_tree(int fd, char * path, char * relative_path){
 				strcat(ret, "/");
 				send_file_packet(fd, ret, 0);
 				dump_tree(fd, temp, ret);
+
 			}else{
 				char ret[strlen(relative_path) + strlen(dir->d_name)];
 				strcpy(ret, relative_path);
 				strcat(ret, dir->d_name);
-
 				send_file_packet(fd, ret, 1);
 				send_file_content(fd, temp, ret);
 			}
@@ -415,7 +419,7 @@ void send_chunk(int cfd, char * buf, int size){
 }
 
 void net_send_chunk(int cfd, char * buf, int type, char * mountpoint){
-	// printf("%s\n", "received request");
+	
 	struct msg * data = deserialize_path(buf, type);
 	char temp[strlen(mountpoint) + strlen(data->path)];
 	strcpy(temp, mountpoint);

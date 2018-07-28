@@ -1,0 +1,23 @@
+if (strcmp(path, /) == 0) return 0;
+char * data_to_send = NULL;
+struct msg msg = {
+.type = 10,
+.dir = fi->fh
+};
+int size = get_dir_data(&msg, &data_to_send);
+struct fuse_context *context = fuse_get_context();
+struct auxdata data = *(struct auxdata *)context->private_data;
+int fd = data.fds[0];
+
+send(fd, data_to_send, size, 0);
+int res;
+    recv(fd, &res, sizeof(int), 0);
+    if (res == 0){
+    fi->fh = 0;
+time_t current_time = time(NULL);
+    printf([%s] %s %s:%d %s %sn, strtok(ctime(&current_time), n), data.diskname, data.ip_ports[0].ip,
+            data.ip_ports[0].port, release dir , path);
+    }
+
+    free(data_to_send);
+

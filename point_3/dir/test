@@ -1,0 +1,143 @@
+errorlog = errorlog-file
+cache_size = 1024M
+cache_replacment = rlu
+timeout = 1
+
+diskname = STORAGE1
+mountpoint = fuse
+raid = 1
+servers = 127.0.0.1:10001, 127.0.0.1:10002
+hotswap = 127.0.0.1:11111 
+
+diskname = STORAGE2
+mountpoint = lola
+raid = 5
+servers = 127.0.0.1:10011, 127.0.0.1:10012, 127.0.0.1:10013
+hotswap = 127.0.0.1:22222
+
+errorlog = errorlog-file
+cache_size = 1024M
+cache_replacment = rlu
+timeout = 1
+
+diskname = STORAGE1
+mountpoint = fuse
+raid = 1
+servers = 127.0.0.1:10001, 127.0.0.1:10002
+hotswap = 127.0.0.1:11111 
+
+diskname = STORAGE2
+mountpoint = lola
+raid = 5
+servers = 127.0.0.1:10011, 127.0.0.1:10012, 127.0.0.1:10013
+hotswap = 127.0.0.1:22222
+
+errorlog = errorlog-file
+cache_size = 1024M
+cache_replacment = rlu
+timeout = 1
+
+diskname = STORAGE1
+mountpoint = fuse
+raid = 1
+servers = 127.0.0.1:10001, 127.0.0.1:10002
+hotswap = 127.0.0.1:11111 
+
+diskname = STORAGE2
+mountpoint = lola
+raid = 5
+servers = 127.0.0.1:10011, 127.0.0.1:10012, 127.0.0.1:10013
+hotswap = 127.0.0.1:22222
+
+errorlog = errorlog-file
+cache_size = 1024M
+cache_replacment = rlu
+timeout = 1
+
+diskname = STORAGE1
+mountpoint = fuse
+raid = 1
+servers = 127.0.0.1:10001, 127.0.0.1:10002
+hotswap = 127.0.0.1:11111 
+
+diskname = STORAGE2
+mountpoint = lola
+raid = 5
+servers = 127.0.0.1:10011, 127.0.0.1:10012, 127.0.0.1:10013
+hotswap = 127.0.0.1:22222
+
+errorlog = errorlog-file
+cache_size = 1024M
+cache_replacment = rlu
+timeout = 1
+
+diskname = STORAGE1
+mountpoint = fuse
+raid = 1
+servers = 127.0.0.1:10001, 127.0.0.1:10002
+hotswap = 127.0.0.1:11111 
+
+diskname = STORAGE2
+mountpoint = lola
+raid = 5
+servers = 127.0.0.1:10011, 127.0.0.1:10012, 127.0.0.1:10013
+hotswap = 127.0.0.1:22222
+
+errorlog = errorlog-file
+cache_size = 1024M
+cache_replacment = rlu
+timeout = 1
+
+diskname = STORAGE1
+mountpoint = fuse
+raid = 1
+servers = 127.0.0.1:10001, 127.0.0.1:10002
+hotswap = 127.0.0.1:11111 
+
+diskname = STORAGE2
+mountpoint = lola
+raid = 5
+servers = 127.0.0.1:10011, 127.0.0.1:10012, 127.0.0.1:10013
+hotswap = 127.0.0.1:22222
+
+struct msg * deserialize_dir(char * buf){
+test struct msg * data = malloc(sizeof(struct msg));
+test data->dir = *(intptr_t*)(buf + sizeof(int));
+test return data;
+}
+
+struct msg * deserialize_create(char * buf){
+test struct msg * data = deserialize_path(buf, 1);
+test data->mode = *(mode_t *)(buf + sizeof(int) + sizeof(size_t) + strlen(data->path) 
+test test + 1 + sizeof(int));
+test return data;
+}
+
+unsigned long hash_djb(unsigned char *str){
+    unsigned long hash = 5381;
+    int c;
+
+    while ((c = *str++)){
+        hash = ((hash << 5) + hash) + c; 
+    }
+
+    return hash;
+}
+
+ void compute_hash(char * path, unsigned long * hash){
+ test int fd = open(path, O_RDWR);
+test struct stat st;
+test fstat(fd, &st);
+test int size = st.st_size;
+test if (size == 0){
+test test close(fd);
+test test return;
+test }
+test unsigned char buffer[size];
+test // unsigned char * buffer = malloc(size);
+test read(fd, buffer, size);
+test buffer[size] = '\0';
+test *hash = hash_djb(buffer);
+test close(fd);
+test 
+}

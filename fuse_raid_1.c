@@ -501,56 +501,56 @@ static int net_write(const char* path, const char *buf, size_t size, off_t offse
 }
 
 static int net_opendir(const char* path, struct fuse_file_info* fi){
-	// if (fi->fh != 0 || strcmp(path, "/") == 0){
-	// 	return 0;
-	// }
-	// char * data_to_send = NULL;
-	// struct msg msg = {
-	// 	.type = 9,
-	// 	.path = (char*)path
-	// };
+	if (fi->fh != 0 || strcmp(path, "/") == 0){
+		return 0;
+	}
+	char * data_to_send = NULL;
+	struct msg msg = {
+		.type = 9,
+		.path = (char*)path
+	};
 
-	// int size = get_path_data(&msg, &data_to_send);
-	// struct fuse_context *context = fuse_get_context();
-	// struct auxdata data = *(struct auxdata *)context->private_data;
-	// int fd = data.fds[0];
+	int size = get_path_data(&msg, &data_to_send);
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata data = *(struct auxdata *)context->private_data;
+	int fd = data.fds[0];
 
-	// send(fd, data_to_send, size, 0);
- //    recv(fd, &fi->fh, sizeof(intptr_t), 0);
- //    if (fi->fh == 0){
-	// 	return -ENOENT;
-	// }
-	// time_t current_time = time(NULL);
-	// printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
- //        data.ip_ports[0].port, "open dir  ", path);
+	send(fd, data_to_send, size, 0);
+    recv(fd, &fi->fh, sizeof(intptr_t), 0);
+    if (fi->fh == 0){
+		return -ENOENT;
+	}
+	time_t current_time = time(NULL);
+	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
+        data.ip_ports[0].port, "open dir  ", path);
 
- //    free(data_to_send);
+    free(data_to_send);
     return 0;
 }
 
 static int net_releasedir(const char* path, struct fuse_file_info *fi){
-	// if (strcmp(path, "/") == 0) return 0;
-	// char * data_to_send = NULL;
-	// struct msg msg = {
-	// 	.type = 10,
-	// 	.dir = fi->fh
-	// };
-	// int size = get_dir_data(&msg, &data_to_send);
-	// struct fuse_context *context = fuse_get_context();
-	// struct auxdata data = *(struct auxdata *)context->private_data;
-	// int fd = data.fds[0];
+	if (strcmp(path, "/") == 0) return 0;
+	char * data_to_send = NULL;
+	struct msg msg = {
+		.type = 10,
+		.dir = fi->fh
+	};
+	int size = get_dir_data(&msg, &data_to_send);
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata data = *(struct auxdata *)context->private_data;
+	int fd = data.fds[0];
 
-	// send(fd, data_to_send, size, 0);
-	// int res;
- //    recv(fd, &res, sizeof(int), 0);
- //    if (res == 0){
- //    	fi->fh = 0;
-	// 	time_t current_time = time(NULL);
- //    	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
- //            data.ip_ports[0].port, "release dir  ", path);
- //    }
+	send(fd, data_to_send, size, 0);
+	int res;
+    recv(fd, &res, sizeof(int), 0);
+    if (res == 0){
+    	fi->fh = 0;
+		time_t current_time = time(NULL);
+    	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
+            data.ip_ports[0].port, "release dir  ", path);
+    }
 
- //    free(data_to_send);
+    free(data_to_send);
 
 	return 0;
 
