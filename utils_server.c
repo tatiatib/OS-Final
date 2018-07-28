@@ -98,6 +98,6 @@ unsigned long hash_djb(unsigned char *str){
 	read(fd, buffer, size);
 	buffer[size] = '\0';
 	*hash = hash_djb(buffer);
-	free(buffer);
 	close(fd);
+	free(buffer);
 }

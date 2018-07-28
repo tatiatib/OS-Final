@@ -44,7 +44,7 @@ static void swap_servers(int fd_index){
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata * data = (struct auxdata *)context->private_data;
 	int fd_hotswap = data->fds[2];
-	
+
 	char * ip_hotswap = data->swap_ip_port[0].ip;
 	int port_hotswap = data->swap_ip_port[0].port;
 
@@ -58,12 +58,15 @@ static void swap_servers(int fd_index){
 }
 
 
-static int check_connection(int fd){
+static int check_connection(struct auxdata data, int fd_index){
+	int fd = data.fds[fd_index];
+
 	int keep_alive_msg = 1;
 	send(fd, &keep_alive_msg, sizeof(int), 0);
 	int received;
 	if ((received = recv(fd, &keep_alive_msg, sizeof(int), 0)) == 0 || received == -1){
-		return 0;
+		if (get_timeout(fd, fd_index, data) == -1)
+			return 0;
 	}
 	return 1;
 }
@@ -104,9 +107,8 @@ static void restore_file(int from, int to, char * path){
 static int rewrite_to_hotswap(int fd_index){
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata data = *(struct auxdata *)context->private_data;
-	int fd = data.fds[fd_index];
 
-	if (check_connection(fd)){
+	if (check_connection(data, fd_index)){
 		time_t current_time = time(NULL);
 		printf("[%s] %s %s:%d hotswap connected\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
@@ -320,8 +322,9 @@ static int net_getattr(const char* path, struct stat* stbuf){
 		.stbuf = stat_buf_check
 	};
 	int backup_status = receive_data_from_storage(1, data_to_send, size, "getattr on path", &msg, &cur_backup);
-	if (status_code != backup_status)
+	if (status_code != backup_status){
 		status_code == -2 ? restore_file(1, 0, (char*)path) : restore_file(0, 1, (char*)path);
+	}
 
 	free(stat_buf_check);
 	free(data_to_send);
@@ -498,56 +501,56 @@ static int net_write(const char* path, const char *buf, size_t size, off_t offse
 }
 
 static int net_opendir(const char* path, struct fuse_file_info* fi){
-	if (fi->fh != 0 || strcmp(path, "/") == 0){
-		return 0;
-	}
-	char * data_to_send = NULL;
-	struct msg msg = {
-		.type = 9,
-		.path = (char*)path
-	};
+	// if (fi->fh != 0 || strcmp(path, "/") == 0){
+	// 	return 0;
+	// }
+	// char * data_to_send = NULL;
+	// struct msg msg = {
+	// 	.type = 9,
+	// 	.path = (char*)path
+	// };
 
-	int size = get_path_data(&msg, &data_to_send);
-	struct fuse_context *context = fuse_get_context();
-	struct auxdata data = *(struct auxdata *)context->private_data;
-	int fd = data.fds[0];
+	// int size = get_path_data(&msg, &data_to_send);
+	// struct fuse_context *context = fuse_get_context();
+	// struct auxdata data = *(struct auxdata *)context->private_data;
+	// int fd = data.fds[0];
 
-	send(fd, data_to_send, size, 0);
-    recv(fd, &fi->fh, sizeof(intptr_t), 0);
-    if (fi->fh == 0){
-		return -ENOENT;
-	}
-	time_t current_time = time(NULL);
-	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
-        data.ip_ports[0].port, "open dir  ", path);
+	// send(fd, data_to_send, size, 0);
+ //    recv(fd, &fi->fh, sizeof(intptr_t), 0);
+ //    if (fi->fh == 0){
+	// 	return -ENOENT;
+	// }
+	// time_t current_time = time(NULL);
+	// printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
+ //        data.ip_ports[0].port, "open dir  ", path);
 
-    free(data_to_send);
+ //    free(data_to_send);
     return 0;
 }
 
 static int net_releasedir(const char* path, struct fuse_file_info *fi){
-	if (strcmp(path, "/") == 0) return 0;
-	char * data_to_send = NULL;
-	struct msg msg = {
-		.type = 10,
-		.dir = fi->fh
-	};
-	int size = get_dir_data(&msg, &data_to_send);
-	struct fuse_context *context = fuse_get_context();
-	struct auxdata data = *(struct auxdata *)context->private_data;
-	int fd = data.fds[0];
+	// if (strcmp(path, "/") == 0) return 0;
+	// char * data_to_send = NULL;
+	// struct msg msg = {
+	// 	.type = 10,
+	// 	.dir = fi->fh
+	// };
+	// int size = get_dir_data(&msg, &data_to_send);
+	// struct fuse_context *context = fuse_get_context();
+	// struct auxdata data = *(struct auxdata *)context->private_data;
+	// int fd = data.fds[0];
 
-	send(fd, data_to_send, size, 0);
-	int res;
-    recv(fd, &res, sizeof(int), 0);
-    if (res == 0){
-    	fi->fh = 0;
-		time_t current_time = time(NULL);
-    	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
-            data.ip_ports[0].port, "release dir  ", path);
-    }
+	// send(fd, data_to_send, size, 0);
+	// int res;
+ //    recv(fd, &res, sizeof(int), 0);
+ //    if (res == 0){
+ //    	fi->fh = 0;
+	// 	time_t current_time = time(NULL);
+ //    	printf("[%s] %s %s:%d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, data.ip_ports[0].ip,
+ //            data.ip_ports[0].port, "release dir  ", path);
+ //    }
 
-    free(data_to_send);
+ //    free(data_to_send);
 
 	return 0;
 

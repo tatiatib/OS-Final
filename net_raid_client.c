@@ -217,11 +217,11 @@ int main(int argc, char const *argv[])
                 exit(100);
             case 0:
             	if (mount_infos[i].raid == 1){
-                	// struct auxdata * data = setup_data(&mount_infos[i], net_client);
-                 //    init_raid_1(mount_infos[i].mountpoint, data);
+                	struct auxdata * data = setup_data(&mount_infos[i], net_client);
+                    init_raid_1(mount_infos[i].mountpoint, data);
                 }else{
-                    struct auxdata * data = setup_data(&mount_infos[i], net_client);
-                    init_raid_5(mount_infos[i].mountpoint, data);
+                    // struct auxdata * data = setup_data(&mount_infos[i], net_client);
+                    // init_raid_5(mount_infos[i].mountpoint, data);
                 }
                 exit(0);
             default:

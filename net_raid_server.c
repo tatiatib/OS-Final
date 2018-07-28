@@ -74,7 +74,7 @@ void net_open(int cfd, char * buf, int type, char * mountpoint){
 }
 
 void net_get_attr(int cfd, char * buf_data, int type, char * mountpoint){
-	// printf("%s\n", "hello");
+
 	struct msg * data = deserialize_path(buf_data, type);
 	char temp[strlen(mountpoint) + strlen(data->path)];
 	strcpy(temp, mountpoint);
@@ -218,14 +218,17 @@ void net_write(int cfd, char * buf, int type, char * mountpoint){
 	
 	unsigned long hash;
 	compute_hash(temp, &hash);
+
 	if (fsetxattr(data->fd, "user.hash", &hash, sizeof(unsigned long), 0) == -1){
 		perror(strerror(errno));
 	}
+
 	char * resp = malloc(sizeof(int) + sizeof(unsigned long));
 	memcpy(resp, &written, sizeof(int));
 	memcpy(resp + sizeof(int), &hash, sizeof(unsigned long));
 	send(cfd, resp, sizeof(int) + sizeof(unsigned long), 0);
 	free(data);
+	free(resp);
 }
 
 void net_readdir(int cfd, char * buf, int type, char * mountpoint){
@@ -256,6 +259,7 @@ void net_readdir(int cfd, char * buf, int type, char * mountpoint){
 }
 
 void net_hostwap_storage(int cfd, char * buf, int type, char * mountpoint){
+
 	int length = *(int*)(buf + sizeof(int));
 	char path[length + 1];
 	strcpy(path, buf + sizeof(int) *2);
@@ -263,6 +267,7 @@ void net_hostwap_storage(int cfd, char * buf, int type, char * mountpoint){
 	char temp[strlen(mountpoint) + strlen(path)];
 	strcpy(temp, mountpoint);
 	strcat(temp, path);
+
 	struct stat buffer;   
 	if (stat(temp, &buffer) == 0){
 		 unlink(temp);
@@ -286,7 +291,6 @@ void net_hotswap_file_content(int cfd, char * buf, int type, char * mountpoint){
 	int fd = open(temp, O_WRONLY);
 	write(fd, (buf + sizeof(int) * 3 + size), data_size);
 	close(fd);
-
 	unsigned long hash;
 	compute_hash(temp, &hash);
 	if (setxattr(temp, "user.hash", &hash, sizeof(unsigned long), 0) == -1){
@@ -341,28 +345,35 @@ static void send_file_content(int cfd, char * full_path, char * path){
 }
 
 
-static void dump_tree(int fd, char * path){
+static void dump_tree(int fd, char * path, char * relative_path){
 	DIR *d;
 	struct dirent *dir;
 	struct stat path_stat;
 	d = opendir(path);
-
+	
 	if (d) {
 		while ((dir = readdir(d)) != NULL) {
 			if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0){
 				continue;
 			}
+
 			char temp[strlen(path) + strlen(dir->d_name) + 1];
 			strcpy(temp, path);
 			strcat(temp, "/");
 			strcat(temp, dir->d_name);
 			stat(temp, &path_stat);
 			if (S_ISDIR(path_stat.st_mode)){
-				char * ret = strchr(temp, '/');
+				char ret[strlen(relative_path) + strlen(dir->d_name) + 1];
+				strcpy(ret, relative_path);
+				strcat(ret, dir->d_name);
+				strcat(ret, "/");
 				send_file_packet(fd, ret, 0);
-				dump_tree(fd, temp);
+				dump_tree(fd, temp, ret);
 			}else{
-				char * ret = strchr(temp, '/');
+				char ret[strlen(relative_path) + strlen(dir->d_name)];
+				strcpy(ret, relative_path);
+				strcat(ret, dir->d_name);
+
 				send_file_packet(fd, ret, 1);
 				send_file_content(fd, temp, ret);
 			}
@@ -372,7 +383,7 @@ static void dump_tree(int fd, char * path){
 }
 
 void net_dump(int fd, char * path){
-	dump_tree(fd, path);	
+	dump_tree(fd, path, "/");	
 	int length = 0;
 	send(fd, &length, sizeof(int), 0);
 }
@@ -397,7 +408,7 @@ void send_chunk(int cfd, char * buf, int size){
 	if (buf != NULL){
 		memcpy(packet + sizeof(int), buf, size);
 	}
-	// printf("sending chunk %d %s \n", size, buf);
+	
 	send(cfd, packet, size + sizeof(int), 0);
 	free(packet);
 
@@ -513,6 +524,7 @@ int main(int argc, char const *argv[])
     	struct sockaddr_in peer_addr;
     	socklen_t peer_addr_size = sizeof(struct sockaddr_in);
         int cfd = accept(sfd, (struct sockaddr *) &peer_addr, &peer_addr_size);
+        printf("%s\n", "accepted");
         pthread_t tid;
         void * auxdata = malloc(sizeof(char*) + sizeof(int));
     	memcpy(auxdata, &path, sizeof(char*));
