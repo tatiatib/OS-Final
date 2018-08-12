@@ -29,6 +29,6 @@ struct msg * deserialize_rename(char* );
 struct msg * deserialize_mode(char * );
 struct msg * deserialize_dir(char * );
 struct msg * deserialize_create(char * );
-unsigned long hash_djb(unsigned char *);
+unsigned long hash_djb(unsigned char *, unsigned long hash);
 void compute_hash(char *, unsigned long * );
 #endif

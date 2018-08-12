@@ -1,0 +1,14 @@
+been granted.
+package.access=sun.,org.apache.catalina.,org.apache.coyote.,org.apache.jasper.,org.apache.tomcat.
+#
+# List of comma-separated packages that start with or equal this string
+# will cause a security exception to be thrown when
+# passed to checkPackageDefinition unless the
+# corresponding RuntimePermission ("defineClassInPackage."+package) has
+# been granted.
+#
+# by default, no packages are restricted for definition, and none of
+# the class loaders supplied with the JDK call checkPackageDefinition.
+#
+package.definition=sun.,java.,org.apache.catalina.,org.apache.coyote.,\
+org.apache.jasper.,org.apache.naming.,org.apache.tomcat.

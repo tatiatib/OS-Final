@@ -220,8 +220,8 @@ int main(int argc, char const *argv[])
                 	struct auxdata * data = setup_data(&mount_infos[i], net_client);
                     init_raid_1(mount_infos[i].mountpoint, data);
                 }else{
-                    // struct auxdata * data = setup_data(&mount_infos[i], net_client);
-                    // init_raid_5(mount_infos[i].mountpoint, data);
+                    struct auxdata * data = setup_data(&mount_infos[i], net_client);
+                    init_raid_5(mount_infos[i].mountpoint, data);
                 }
                 exit(0);
             default:
@@ -229,7 +229,7 @@ int main(int argc, char const *argv[])
         }
   	}
   	while ((wpid = wait(&status)) > 0);
-    printf("%s\n", "Parent process exited");
+    printf("%s\n", "SOMETHING BAD HAPPENED");
   	free(net_client);
   	free(mount_infos);
 	return 0;

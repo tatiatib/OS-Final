@@ -1,5 +1,7 @@
 #include "utils_server.h"
+#include <pthread.h>
 
+pthread_mutex_t mutex;
 struct msg * deserialize_path(char * buf, int type){
 	struct msg * data = malloc(sizeof(struct msg));
 	size_t length  = *(size_t*)(buf + sizeof(int));
@@ -74,8 +76,7 @@ struct msg * deserialize_create(char * buf){
 	return data;
 }
 
-unsigned long hash_djb(unsigned char *str){
-    unsigned long hash = 5381;
+unsigned long hash_djb(unsigned char *str, unsigned long hash){
     int c;
 
     while ((c = *str++)){
@@ -94,11 +95,33 @@ unsigned long hash_djb(unsigned char *str){
 		close(fd);
 		return;
 	}
-	unsigned char buffer[size];
-	// unsigned char * buffer = malloc(size);
-	read(fd, buffer, size);
-	buffer[size] = '\0';
-	*hash = hash_djb(buffer);
-	close(fd);
+	int cur = 0;
+	// //READ WITH CHUNKS
+	//locks
+	unsigned long cur_hash = 5381;
+	int chunk = 1024;
+	pthread_mutex_lock(&mutex);
+	unsigned char * buffer = malloc(chunk);
 	
-}
+	for (cur = 0; cur < st.st_size; cur += chunk){
+		chunk = size > chunk ? chunk : size;
+		if (size > chunk){
+			int read = pread(fd, buffer, chunk, cur);
+			buffer[read] = '\0';
+			cur_hash = hash_djb(buffer, cur_hash);
+		}else{
+			
+			unsigned char * temp = malloc(size);
+			int read = pread(fd, temp, size, cur);
+			temp[read] = '\0';
+			cur_hash = hash_djb(temp, cur_hash);
+			// free(temp);
+		}
+		
+		size -= chunk;
+	}
+	// free(buffer);
+	*hash = cur_hash;
+	close(fd);
+	pthread_mutex_unlock(&mutex); 
+}	

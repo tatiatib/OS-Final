@@ -120,3 +120,4 @@ int get_chunk_data(struct msg * data, char ** res){
 int get_chunk_buf_data(struct msg * data, char ** res){
 	return get_write_data(data, res);
 }
+

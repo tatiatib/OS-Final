@@ -12,7 +12,123 @@
 #include "fuse_raid.h"
 #include "fuse.h"
 
-#define BLOCK 10
+#define BLOCK 1024
+
+int get_server_timeout(int fd, int fd_index, struct auxdata data){
+	int ret;
+	time_t start = time(NULL);
+	printf("[%s] %s %s:%d Trying to connect for %d seconds\n", strtok(ctime(&start), "\n"), data.diskname, 
+				data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port, data.timeout);
+	close(fd);
+	fd = socket(AF_INET, SOCK_STREAM, 0);
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(data.ip_ports[fd_index].port);
+	inet_aton(data.ip_ports[fd_index].ip, (struct in_addr *)&addr.sin_addr.s_addr);
+
+	time_t end = time(NULL);
+	while(difftime(end, start) < (double)data.timeout){
+		ret = connect(fd, (struct sockaddr *) &addr, sizeof(struct sockaddr_in));
+		if (ret == 0){
+			printf("[%s] %s %s:%d connection established\n", strtok(ctime(&end), "\n"), data.diskname, 
+				data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);	
+			return 0;
+		}
+		end = time(NULL);
+	}
+
+	
+	return -1;
+}
+
+
+static void swap_fd_servers(int fd_index){
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata * data = (struct auxdata *)context->private_data;
+	int fd_hotswap = data->fds[data->fd_numb];
+
+	char * ip_hotswap = data->swap_ip_port[0].ip;
+	int port_hotswap = data->swap_ip_port[0].port;
+
+	data->fds[data->fd_numb] = data->fds[fd_index];
+	data->swap_ip_port[0].ip = data->ip_ports[fd_index].ip;
+	data->swap_ip_port[0].port = data->ip_ports[fd_index].port;
+
+	data->fds[fd_index] = fd_hotswap;
+	data->ip_ports[fd_index].ip = ip_hotswap;
+	data->ip_ports[fd_index].port = port_hotswap;
+}
+
+int check_hotswap_connection(struct auxdata data, int fd_index){
+	int fd = data.fds[fd_index];
+
+	int keep_alive_msg = 1;
+	send(fd, &keep_alive_msg, sizeof(int), 0);
+	int received;
+	if ((received = recv(fd, &keep_alive_msg, sizeof(int), 0)) == 0 || received == -1){
+		if (get_server_timeout(fd, fd_index, data) == -1)
+			return 0;
+	}
+	return 1;
+}
+
+void get_files(int from, int to, int tree){
+	int length;
+	recv(from, &length, sizeof(int), 0);
+	// printf("tree %d\n", tree);
+	while (length > 0){
+		void * buf = malloc(length);
+		recv(from, buf, length, 0);
+		int type = *(int*)(buf + sizeof(int));
+		// printf("type %d\n",type );
+		if (type == 14){
+			if (tree) send(to, buf, length, 0);
+		}else{
+			type = 19;
+			memcpy(buf + sizeof(int), &type, sizeof(int));
+			send(to, buf, length, 0);
+		}
+		recv(from, &length, sizeof(int), 0);
+		free(buf);
+	}
+}
+
+
+int dump_to_hotswap(int fd_index){
+	printf("%s\n","dump_to_hotswap" );
+	struct fuse_context *context = fuse_get_context();
+	struct auxdata data = *(struct auxdata *)context->private_data;
+
+	if (check_hotswap_connection(data, fd_index)){
+		time_t current_time = time(NULL);
+		printf("[%s] %s %s:%d hotswap connected\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+	}else{
+		time_t current_time = time(NULL);
+		printf("[%s] %s %s:%d hotswap is not connected\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+		return 1;
+	}
+	int i;
+	int dump_msg = -1;
+	int tree = 1;
+	int clear_msg = -2;
+	send(data.fds[fd_index], &clear_msg, sizeof(int), 0);
+	int done;
+	recv(data.fds[fd_index], &done, sizeof(int), 0);
+	if (done){
+		for (i = 0; i < data.fd_numb; i ++ ){
+			if (i != fd_index){
+				send(data.fds[i], &dump_msg, sizeof(int), 0);
+				get_files(data.fds[i], data.fds[fd_index], tree);
+				tree = 0;
+			}
+		}
+	}
+	
+
+	return 0;
+}
 
 static int connect_server(int fd_index, struct auxdata data, char * data_to_send, int size, char * log_msg,
 	struct msg * msg, struct buf * buf){
@@ -26,18 +142,35 @@ static int connect_server(int fd_index, struct auxdata data, char * data_to_send
     int received = recv(fd, &status_code, sizeof(int), 0);
 
     if (received == 0){
-    	printf("%s\n", "received nothing");
-    	return -1;
+    	printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+    	if (get_server_timeout(fd, fd_index, data) == -1){
+			swap_fd_servers(fd_index);
+			if (dump_to_hotswap(fd_index))
+    			return -1;
+    	}
+
+    	return connect_server(fd_index, data, data_to_send, size, log_msg, msg, buf);
     }
 
     if (msg->type == 0){
     	received = recv(fd, buf->stbuf, sizeof(*buf->stbuf), 0);
+    	if(received == 0){
+    		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+    		if (get_server_timeout(fd, fd_index, data) == -1){
+				swap_fd_servers(fd_index);
+	    		if (dump_to_hotswap(fd_index))
+	    			return -1;
+	    	}
+	    	return connect_server(fd_index, data, data_to_send, size, log_msg, msg, buf);
+    	}
     }
 
     return status_code;
 }
 
-static int get_chunk(int fd, const char * path, int n_block, char ** buf){
+static int get_chunk(int fd, int fd_index, const char * path, int n_block, char ** buf, struct auxdata data){
 
 	char * data_to_send = NULL;
 	struct msg msg = {
@@ -52,13 +185,33 @@ static int get_chunk(int fd, const char * path, int n_block, char ** buf){
 
 	int size;
 	int received = recv(fd, &size, sizeof(int), 0);
-	printf("%d\n", size);
+	time_t current_time = time(NULL);
+	if (received == 0){
+		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+		if (get_server_timeout(fd, fd_index, data) == -1){
+			swap_fd_servers(fd_index);
+    		if (dump_to_hotswap(fd_index))
+	    		return -1;
+	    }
+		return get_chunk(fd, fd_index, path, n_block, buf, data);
+	}
+
 	if (size != 0){
 		received = recv(fd, *buf, size, 0);
+		if (received  == 0) {
+			printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+    		if (get_server_timeout(fd, fd_index, data) == -1){
+				swap_fd_servers(fd_index);
+	    		if (dump_to_hotswap(fd_index))
+	    			return -1;
+	    	}
+	    	return get_chunk(fd, fd_index, path, n_block, buf, data);
+		}
 	}
-	// if(size == 0)
+	
 	memset(*buf + size, 0, BLOCK - size);
-	printf("get chunk %s\n", *buf);
 	return size;
 }
 
@@ -77,7 +230,7 @@ static int raid_getattr(const char* path, struct stat* stbuf){
 	};
 	int file_lenght = 0;
 	int status = connect_server(0, data, data_to_send, size, "getattr on path", &msg, &cur);
-
+	// printf("status %d\n", status);
 	if (status != 0){
 		free(data_to_send);
 		return -ENOENT;
@@ -116,7 +269,7 @@ static int raid_open(const char* path, struct fuse_file_info* fi){
 
 static int raid_read(const char* path, char *buf, size_t size, off_t offset, 
 	struct fuse_file_info* fi){
-	// printf("%d\n", offset);
+
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata data = *(struct auxdata *)context->private_data;
 	int cur_server = (offset / BLOCK) % data.fd_numb;
@@ -127,19 +280,23 @@ static int raid_read(const char* path, char *buf, size_t size, off_t offset,
 	int received_size;
 
 	do{
-		printf("pointer %d n_block %d cur_server %d\n", pointer, n_block, cur_server);
 		char * buf_pointer = buf + pointer;
-		received_size = get_chunk(data.fds[cur_server], path, n_block, &buf_pointer);
-		printf("received_size %d\n", received_size);
+		received_size = get_chunk(data.fds[cur_server], cur_server, path, n_block, &buf_pointer, data);
+		time_t current_time = time(NULL);
+		printf("[%s] %s %s:%d %s %d %s %s\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[cur_server].ip, data.ip_ports[cur_server].port, 
+    		"read ", received_size, "bytes from " , path);
 		size -= received_size;
 		pointer += received_size;
 		n_block = (offset + pointer) / stripe;
 		cur_server = ((offset + pointer) / BLOCK) % data.fd_numb;
 	}while(received_size == BLOCK && size > 0);
 
-	printf("final buf %s\n",buf);
-	printf("strleen %d\n", strlen(buf));
-	printf("pointer %d\n", pointer);
+	
+	// printf("final buf %s\n",buf);
+	// printf("strleen %d\n", strlen(buf));
+	// printf("pointer %d\n", pointer);
+
 	return pointer;
 }
 static int raid_release(const char* path, struct fuse_file_info *fi){
@@ -228,7 +385,8 @@ static int raid_mkdir(const char* path, mode_t mode){
 
 
 
-static void send_chunk(int fd, const char * path, const char * buf, int offset, int size, int n_block){
+static void send_chunk(int fd, int fd_index, const char * path, const char * buf,
+	 int offset, int size, int n_block, struct auxdata data){
 	char * data_to_send = NULL;
 	struct msg msg = {
 		.type = 18,
@@ -245,16 +403,27 @@ static void send_chunk(int fd, const char * path, const char * buf, int offset, 
 
 	size_t res;
 	int received = recv(fd, &res, sizeof(size_t), 0);
+	time_t current_time = time(NULL);
 	if (received == 0){
-		printf("%s\n", "connection lost");
+		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+		if (get_server_timeout(fd, fd_index, data) == -1){
+			swap_fd_servers(fd_index);
+			if (dump_to_hotswap(fd_index))
+    			return;
+	    }
+	    send_chunk(fd, fd_index, path, buf, offset, size, n_block, data);
+	    return;
 	}
 
-	if ((int)res == size){
-		printf("%s\n", "correct write");
+	if ((int)res != size){
+		printf("wrote %zu bytes instead of %d \n", res, size);
 	}
+
 }
 
-static void send_xor(int fd, const char * path, char * data, int size, int n_block){
+static void send_xor(int fd, int fd_index, const char * path, char * buf, int size, 
+		int n_block, struct auxdata data){
 	int i;
 	char * xor = malloc(BLOCK);
 	memset(xor, 0, BLOCK);
@@ -262,11 +431,9 @@ static void send_xor(int fd, const char * path, char * data, int size, int n_blo
 	for (i = 0; i < size; i ++){
 		int j;
 		for (j = 0; j < BLOCK; j++){
-			xor[j] ^= (data + i*BLOCK)[j];
-			// printf("cur %c xor %c \n", (data + i*BLOCK)[j], xor[j]);	
+			xor[j] ^= (buf + i*BLOCK)[j];
 		}
 	}
-	
 	
 	char * data_to_send = NULL;
 	struct msg msg = {
@@ -284,41 +451,46 @@ static void send_xor(int fd, const char * path, char * data, int size, int n_blo
 
 	size_t res;
 	int received = recv(fd, &res, sizeof(size_t), 0);
+
+	time_t current_time = time(NULL);
 	if (received == 0){
-		printf("%s\n", "connection lost");
+		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[fd_index].ip, data.ip_ports[fd_index].port);
+		if (get_server_timeout(fd, fd_index, data) == -1){
+			swap_fd_servers(fd_index);
+			if (dump_to_hotswap(fd_index))
+    			return;
+	    }
+	    send_xor(fd, fd_index, path, buf, size, n_block, data);
+	    return;
 	}
 
-	if ((int)res == BLOCK){
-		printf("%s\n", "correct write");
+	if ((int)res != BLOCK){
+		printf("wrote %zu bytes instead of %d  while sending xor\n", res, size);
 	}
 }
 
 static int raid_write(const char* path, const char *buf, size_t size, off_t offset, 
 	struct fuse_file_info* fi){
-	printf("size %d\n", size);
-	printf("offset %d\n", offset);
-	printf("%s\n", buf);
-	printf("%s\n","============================");
+	// printf("size %d\n", size);
+	// printf("offset %d\n", offset);
+	// printf("%s\n", buf);
+	// printf("%s\n","============================");
 	struct fuse_context *context = fuse_get_context();
 	struct auxdata data = *(struct auxdata *)context->private_data;
 
 	int start_server = (offset / BLOCK) % data.fd_numb;
 	char  * xor_data = malloc(BLOCK * (data.fd_numb - 1));
-	printf("start_server %d\n", start_server);
+	// printf("start_server %d\n", start_server);
 	int j = 0;
-	int i = 0;
-	printf("%d\n", start_server);
+	// printf("%d\n", start_server);
 	int cur_size = size;
-	int server_numb = size % BLOCK == 0 || size < BLOCK ? size / BLOCK : (size / BLOCK) + 1;
+	
 	int chunk = BLOCK - (offset % BLOCK);
 	if ((offset == 0 && size < BLOCK) || chunk > size) chunk = size;
 
-	if (size < BLOCK && offset != 0){
-		server_numb += 1;
-	}
-
 	int pointer = 0;
-	printf("server_numb %d  chunk %d \n", server_numb, chunk);
+	// printf("chunk %d \n",  chunk);
 
 	int stripe = BLOCK * (data.fd_numb - 1);
 	int cur_server = (start_server - 1) % data.fd_numb;
@@ -332,43 +504,44 @@ static int raid_write(const char* path, const char *buf, size_t size, off_t offs
 	
 		if (cur_offset / stripe == cur_rem){
 			char * xor_pointer = xor_data + j * BLOCK;
-			get_chunk(data.fds[cur_server], path, cur_rem, &xor_pointer);
+			get_chunk(data.fds[cur_server], cur_server, path, cur_rem, &xor_pointer, data);
 		
 		}else break;
 		
 		cur_offset -= BLOCK;
 		j += 1;
-		cur_server = (cur_server - 1) % server_numb;
+		cur_server = (cur_server - 1) % data.fd_numb;
 	}
 
 	//current blocks
 
-	for (i = start_server; i < start_server + server_numb; i++){
-		int fd = i % data.fd_numb;
+	while(cur_size > 0){
+		int fd = start_server % data.fd_numb;
 		n_block = (offset + pointer) / stripe;
 		if (j == data.fd_numb - 1){
-			printf("send xor block_n %d\n",n_block - 1);
-			send_xor(data.fds[fd], path, xor_data, data.fd_numb - 1, n_block - 1);
+			// printf("send xor block_n %d\n",n_block - 1);
+			send_xor(data.fds[fd], fd, path, xor_data, data.fd_numb - 1, n_block - 1, data);
 			j = 0;
 		}
-		printf("fd %d pointer %d\n", fd, pointer);
-		printf("n_block %d chunk %d\n", n_block, chunk);
+		// printf("fd %d pointer %d\n", fd, pointer);
+		// printf("n_block %d chunk %d\n", n_block, chunk);
 		if (pointer == 0)
-			send_chunk(data.fds[fd], path, buf + pointer, offset % BLOCK, chunk, n_block);
-		else send_chunk(data.fds[fd], path,  buf + pointer, 0, chunk,  n_block);
+			send_chunk(data.fds[fd], fd, path, buf + pointer, offset % BLOCK, chunk, n_block, data);
+		else send_chunk(data.fds[fd], fd, path,  buf + pointer, 0, chunk,  n_block, data);
 		
 
 		if (chunk == BLOCK){
 			memcpy(xor_data + BLOCK * j, buf + pointer, BLOCK);
-			printf("int chunk = BLock j %d pointer %d \n", j, pointer);
+			// printf("int chunk = BLock j %d pointer %d \n", j, pointer);
 		}else{
-			printf("j is %d\n", j);
+			// printf("j is %d\n", j);
 			char * xor_pointer = xor_data + j * BLOCK;
-			get_chunk(data.fds[fd], path, n_block, &xor_pointer);
-			printf("get chunk , block_n %d\n", n_block);
+			get_chunk(data.fds[fd], fd, path, n_block, &xor_pointer, data);
+			// printf("get chunk , block_n %d\n", n_block);
 		}
-		printf("i %d\n", i);
+		
 		j += 1;
+		start_server += 1;
 		pointer += chunk;
 		cur_size -= chunk;
 		if (cur_size > BLOCK){
@@ -379,15 +552,15 @@ static int raid_write(const char* path, const char *buf, size_t size, off_t offs
 	}	
 	//TODO 
 	//next blocks
-	printf("%s\n", "-----------------------");
+	// printf("%s\n", "-----------------------");
 	int written = offset + size;
-	printf("written %d\n",written );
+	// printf("written %d\n",written );
 	n_block = written / stripe;
-	cur_server = i % data.fd_numb;
-	printf("cur_server %d\n", cur_server);
+	cur_server = start_server % data.fd_numb;
+	// printf("cur_server %d\n", cur_server);
 	if (j == data.fd_numb - 1){
-		printf("%s\n", "its jere");
-		send_xor(data.fds[cur_server], path, xor_data, data.fd_numb - 1, n_block);
+		n_block = written % stripe == 0 ? n_block - 1 : n_block;
+		send_xor(data.fds[cur_server], cur_server, path, xor_data, data.fd_numb - 1, n_block, data);
 		free(xor_data);
 		return size;
 	}
@@ -395,13 +568,11 @@ static int raid_write(const char* path, const char *buf, size_t size, off_t offs
 	while ((int)((written + BLOCK) / stripe) == n_block || (written + BLOCK) % stripe == 0){
 
 		char * xor_pointer = xor_data + j * BLOCK;
-		get_chunk(data.fds[cur_server], path, n_block, &xor_pointer);
-		printf("get chunk , block_n %d\n", n_block);
+		get_chunk(data.fds[cur_server], cur_server, path, n_block, &xor_pointer, data);
 		j += 1;
-		cur_server = (i+1) % data.fd_numb;
+		cur_server = (start_server+1) % data.fd_numb;
 		if (j == data.fd_numb - 1){
-			send_xor(data.fds[cur_server], path, xor_data, data.fd_numb - 1, n_block);
-			printf("send_xor fd %d\n", cur_server);
+			send_xor(data.fds[cur_server], cur_server, path, xor_data, data.fd_numb - 1, n_block, data);
 			break;
 		}
 		written += BLOCK;
@@ -412,12 +583,10 @@ static int raid_write(const char* path, const char *buf, size_t size, off_t offs
 }
 
 static int raid_opendir(const char* path, struct fuse_file_info* fi){
-	printf("opendir %s\n", path);
 	return 0;
 }
 
 static int raid_releasedir(const char* path, struct fuse_file_info *fi){
-	printf("releasedir %s\n", path);
 	return 0;
 }
 
@@ -443,7 +612,6 @@ static int raid_create(const char * path, mode_t modes, struct fuse_file_info * 
 }
 
 static int raid_truncate(const char* path, off_t size){
-	printf("truncate %s\n", path);
 	return 0;
 }
 
@@ -464,7 +632,6 @@ static void raid_destroy(void * private_data){
 }
 
 static int raid_utime (const char *path, struct utimbuf *ubuf){
-	printf("%s\n","utime" );
 	return 0;
 }
 
@@ -487,8 +654,16 @@ static int raid_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     		data.ip_ports[0].ip, data.ip_ports[0].port, "readdir ", path);
     int name_length;
 	int received = recv(fd, &name_length, sizeof(int), 0);
+
 	if (received == 0){
-		printf("%s\n", "received nothing");
+		printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
+    		data.ip_ports[0].ip, data.ip_ports[0].port);
+		if (get_server_timeout(fd, 0, data) == -1){
+			swap_fd_servers(0);
+			if (dump_to_hotswap(0))
+				return -1;
+	   	}
+
 		return 0;
 	}
 	while (name_length != 0){
@@ -497,6 +672,12 @@ static int raid_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		if (received == 0){
 			printf("[%s] %s %s:%d connection lost\n", strtok(ctime(&current_time), "\n"), data.diskname, 
     		data.ip_ports[0].ip, data.ip_ports[0].port);
+    		if (get_server_timeout(fd, 0, data) == -1){
+				swap_fd_servers(0);
+				if (dump_to_hotswap(0))
+				return -1;
+	    	}
+	    	return 0;
 		}
 		name[name_length] = '\0';
 		filler(buf, name, NULL, 0);
@@ -509,10 +690,16 @@ static int raid_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	}
 
 	free(data_to_send);
-
 	return 0;
 }
 
+
+static int raid_chmod(const char *path, mode_t mode){
+	return 0;
+}
+static int raid_chown(const char *path, uid_t uid, gid_t gid){
+	return 0;
+}
 
 static struct fuse_operations raid_oper = {
 	.getattr	= raid_getattr,	
@@ -530,7 +717,9 @@ static struct fuse_operations raid_oper = {
 	.truncate   = raid_truncate,
 	.destroy	= raid_destroy,
 	.utime 		= raid_utime,
-	.readdir    = raid_readdir
+	.readdir    = raid_readdir,
+	.chmod 		= raid_chmod,
+	.chown		= raid_chown
 };
 
 void init_raid_5(char * mountpoint, struct auxdata * data){
